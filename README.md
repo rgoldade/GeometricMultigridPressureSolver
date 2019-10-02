@@ -1,4 +1,4 @@
-# GeometricMultiGridPressureSolver
+# GeometricMultigridPressureSolver
 
 This is a geometric multigrid solver for a standard scalar poisson problem that is typically used to solve for pressure in fluids simulations. It is based on McAdams et al., 2010 and built as a plug-in to Houdini 18.
 
