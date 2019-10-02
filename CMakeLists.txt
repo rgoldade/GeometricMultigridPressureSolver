@@ -1,6 +1,6 @@
 cmake_minimum_required( VERSION 3.6 )
 
-project( HDK_GeometricMultiGridPressureSolver )
+project( HDK_GeometricMultigridPressureSolver )
 
 # CMAKE_PREFIX_PATH must contain the path to the toolkit/cmake subdirectory of
 # the Houdini installation. See the "Compiling with CMake" section of the HDK
@@ -11,7 +11,6 @@ list( APPEND CMAKE_PREFIX_PATH "$ENV{HFS}/toolkit/cmake" )
 # Locate Houdini's libraries and header files.
 # Registers an imported library target named 'Houdini'.
 find_package( Houdini REQUIRED )
-
 
 # Add the cmake/Modules directory for external dependency location scripts
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")

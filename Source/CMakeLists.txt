@@ -2,16 +2,16 @@
 ## Tests to verify geometric multigrid operations
 ##
 
-set( library_name HDK_TestGeometricMultiGrid )
+set( library_name HDK_TestGeometricMultigrid )
 
 # Add a library and its source files.
 add_library( ${library_name} SHARED
-    HDK_GeometricMultiGridOperators.cpp
-    HDK_GeometricMultiGridOperators.h
-    HDK_GeometricMultiGridPoissonSolver.cpp
-	HDK_GeometricMultiGridPoissonSolver.h
-    HDK_TestGeometricMultiGrid.cpp
-    HDK_TestGeometricMultiGrid.h
+    HDK_GeometricMultigridOperators.cpp
+    HDK_GeometricMultigridOperators.h
+    HDK_GeometricMultigridPoissonSolver.cpp
+	HDK_GeometricMultigridPoissonSolver.h
+    HDK_TestGeometricMultigrid.cpp
+    HDK_TestGeometricMultigrid.h
 )
 
 # Link against the Houdini libraries, and add required include directories and

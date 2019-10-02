@@ -1,7 +1,7 @@
 #ifndef HDK_GEOMETRIC_CONJUGATE_GRADIENT_SOLVER_H
 #define HDK_GEOMETRIC_CONJUGATE_GRADIENT_SOLVER_H
 
-#include "HDK_GeometricMultiGridOperators.h"
+#include "HDK_GeometricMultigridOperators.h"
 
 namespace HDK
 {
@@ -21,7 +21,7 @@ namespace HDK
 					    const StoreReal tolerance,
 					    const int maxIterations)
     {
-	using namespace GeometricMultiGridOperators;
+	using namespace GeometricMultigridOperators;
 	using SolveReal = double;
 
 	UT_Vector3I voxelRes = solutionGrid.getVoxelRes();

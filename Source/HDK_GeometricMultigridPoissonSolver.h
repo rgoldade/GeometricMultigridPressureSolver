@@ -1,5 +1,5 @@
-#ifndef HDK_GEOMETRIC_MULTI_GRID_POISSON_SOLVER_H
-#define HDK_GEOMETRIC_MULTI_GRID_POISSON_SOLVER_H
+#ifndef HDK_GEOMETRIC_MULTIGRID_POISSON_SOLVER_H
+#define HDK_GEOMETRIC_MULTIGRID_POISSON_SOLVER_H
 
 #include <Eigen/Sparse>
 
@@ -7,7 +7,7 @@
 
 namespace HDK
 {
-    class GeometricMultiGridPoissonSolver
+    class GeometricMultigridPoissonSolver
     {
 	static constexpr int UNLABELLED_CELL = -1;
 
@@ -17,7 +17,7 @@ namespace HDK
 
     public:
 
-	GeometricMultiGridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
+	GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
 					const int mgLevels,
 					const SolveReal dx,
 					const int boundarySmootherWidth = 2,

@@ -1,4 +1,4 @@
-#include "HDK_TestGeometricMultiGrid.h"
+#include "HDK_TestGeometricMultigrid.h"
 
 #include <Eigen/Sparse>
 
@@ -15,30 +15,30 @@
 #include <UT/UT_StopWatch.h>
 
 #include "HDK_GeometricCGPoissonSolver.h"
-#include "HDK_GeometricMultiGridOperators.h"
-#include "HDK_GeometricMultiGridPoissonSolver.h"
+#include "HDK_GeometricMultigridOperators.h"
+#include "HDK_GeometricMultigridPoissonSolver.h"
 
-using namespace HDK::GeometricMultiGridOperators;
+using namespace HDK::GeometricMultigridOperators;
 using namespace SIM::FieldUtils;
 
 void initializeSIM(void *)
 {
-   IMPLEMENT_DATAFACTORY(HDK_TestGeometricMultiGrid);
+   IMPLEMENT_DATAFACTORY(HDK_TestGeometricMultigrid);
 }
 
 // Standard constructor, note that BaseClass was crated by the
 // DECLARE_DATAFACTORY and provides an easy way to chain through
 // the class hierarchy.
-HDK_TestGeometricMultiGrid::HDK_TestGeometricMultiGrid(const SIM_DataFactory *factory)
+HDK_TestGeometricMultigrid::HDK_TestGeometricMultigrid(const SIM_DataFactory *factory)
     : BaseClass(factory)
 {
 }
 
-HDK_TestGeometricMultiGrid::~HDK_TestGeometricMultiGrid()
+HDK_TestGeometricMultigrid::~HDK_TestGeometricMultigrid()
 {
 }
 
-const SIM_DopDescription* HDK_TestGeometricMultiGrid::getDopDescription()
+const SIM_DopDescription* HDK_TestGeometricMultigrid::getDopDescription()
 {
     static PRM_Name	theGridSizeName("gridSize", "Grid Size");
     static PRM_Default  theGridSizeDefault(64);
@@ -61,11 +61,11 @@ const SIM_DopDescription* HDK_TestGeometricMultiGrid::getDopDescription()
 
     static PRM_Name	theTestConjugateGradientName("testConjugateGradient", "Test Conjugate Gradient");
 
-    static PRM_Name	theUseMultiGridPreconditionerName("useMultiGridPreconditioner", "Use Multi Grid preconditioner");
+    static PRM_Name	theUseMultigridPreconditionerName("useMultigridPreconditioner", "Use Multigrid preconditioner");
 
     static PRM_Name	theSolveCGGeometricallyName("solveCGGeometrically", "Solve CG Geometrically");
 
-    static PRM_Name	theMultiGridLevelsName("multiGridLevels", "Multi Grid Levels");
+    static PRM_Name	theMultigridLevelsName("multigridLevels", "Multigrid Levels");
 
     static PRM_Name	theSolverToleranceName("solverTolerance", "Solver Tolerance");
     static PRM_Default	theSolverToleranceDefault(1E-5);
@@ -120,13 +120,13 @@ const SIM_DopDescription* HDK_TestGeometricMultiGrid::getDopDescription()
 
 	PRM_Template(PRM_TOGGLE, 1, &theTestConjugateGradientName),
 
-	PRM_Template(PRM_TOGGLE, 1, &theUseMultiGridPreconditionerName, PRMzeroDefaults,
+	PRM_Template(PRM_TOGGLE, 1, &theUseMultigridPreconditionerName, PRMzeroDefaults,
 			0, 0, 0, 0, 1, 0, &theTestConjugateGradientDisable),
 	
 	PRM_Template(PRM_TOGGLE, 1, &theSolveCGGeometricallyName, PRMzeroDefaults,
 			0, 0, 0, 0, 1, 0, &theTestConjugateGradientDisable),
 
-	PRM_Template(PRM_INT, 1, &theMultiGridLevelsName, PRMfourDefaults,
+	PRM_Template(PRM_INT, 1, &theMultigridLevelsName, PRMfourDefaults,
 			0, 0, 0, 0, 1, 0, &theTestConjugateGradientDisable),
 
 	PRM_Template(PRM_FLT, 1, &theSolverToleranceName, &theSolverToleranceDefault,
@@ -161,8 +161,8 @@ const SIM_DopDescription* HDK_TestGeometricMultiGrid::getDopDescription()
     };
 
     static SIM_DopDescription theDopDescription(true,
-						"HDK_TestGeometricMultiGrid",
-						"HDK Test Geometric Multi Grid",
+						"HDK_TestGeometricMultigrid",
+						"HDK Test Geometric Multigrid",
 						"$OS",
 						classname(),
 						theTemplates);
@@ -293,7 +293,7 @@ buildSimpleDomain(const int gridSize,
     return domainCellLabels;
 }
 
-bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
+bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 						    SIM_Object *obj,
 						    SIM_Time time,
 						    SIM_Time timestep)
@@ -397,18 +397,18 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	auto MatrixVectorMultiply = [&domainCellLabels, &dummyWeights, dx](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 	{
 	    // Matrix-vector multiplication
-	    HDK::GeometricMultiGridOperators::applyPoissonMatrix<SolveReal>(destination, source, domainCellLabels, dummyWeights, dx);
+	    HDK::GeometricMultigridOperators::applyPoissonMatrix<SolveReal>(destination, source, domainCellLabels, dummyWeights, dx);
 	};
 
 	auto DotProduct = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid0, const UT_VoxelArray<StoreReal> &grid1) -> fpreal32
 	{
 	    assert(grid0.getVoxelRes() == grid1.getVoxelRes());
-	    return HDK::GeometricMultiGridOperators::dotProduct<SolveReal>(grid0, grid1, domainCellLabels);
+	    return HDK::GeometricMultigridOperators::dotProduct<SolveReal>(grid0, grid1, domainCellLabels);
 	};
 
 	auto L2Norm = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid) -> fpreal32
 	{
-	    return HDK::GeometricMultiGridOperators::l2Norm<SolveReal>(grid, domainCellLabels);
+	    return HDK::GeometricMultigridOperators::l2Norm<SolveReal>(grid, domainCellLabels);
 	};
 
 	auto AddScaledVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
@@ -416,10 +416,10 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 						    const UT_VoxelArray<StoreReal> &scaledSource,
 						    const fpreal32 scale)
 	{
-	    HDK::GeometricMultiGridOperators::addVectors(destination, unscaledSource, scaledSource, scale, domainCellLabels);
+	    HDK::GeometricMultigridOperators::addVectors(destination, unscaledSource, scaledSource, scale, domainCellLabels);
 	};
 
-	if (getUseMultiGridPreconditioner())
+	if (getUseMultigridPreconditioner())
 	{
 	    UT_StopWatch timer;
 	    timer.start();
@@ -427,10 +427,10 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	    // TODO: add gauss seidel option
 
 	    // Pre-build multigrid preconditioner
-	    HDK::GeometricMultiGridPoissonSolver mgPreconditioner(domainCellLabels, getMultiGridLevels(), dx, 2, 1, 1, true);
+	    HDK::GeometricMultigridPoissonSolver mgPreconditioner(domainCellLabels, getMultigridLevels(), dx, 2, 1, 1, true);
 	    mgPreconditioner.setGradientWeights(dummyWeights);
 
-	    auto MultiGridPreconditioner = [&mgPreconditioner](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
+	    auto MultigridPreconditioner = [&mgPreconditioner](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 	    {
 		assert(destination.getVoxelRes() == source.getVoxelRes());
 		mgPreconditioner.applyVCycle(destination, source);
@@ -439,7 +439,7 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	    HDK::solveGeometricConjugateGradient(solutionGrid,
 						    rhsGrid,
 						    MatrixVectorMultiply,
-						    MultiGridPreconditioner,
+						    MultigridPreconditioner,
 						    DotProduct,
 						    L2Norm,
 						    AddScaledVector,
@@ -457,8 +457,8 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	    MatrixVectorMultiply(residualGrid, solutionGrid);
 	    AddScaledVector(residualGrid, rhsGrid, residualGrid, -1);
 
-	    std::cout << "  L-infinity error: " << HDK::GeometricMultiGridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
-	    std::cout << "  Relative L-2: " << HDK::GeometricMultiGridOperators::l2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultiGridOperators::l2Norm<SolveReal>(rhsGrid, domainCellLabels) << std::endl;
+	    std::cout << "  L-infinity error: " << HDK::GeometricMultigridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
+	    std::cout << "  Relative L-2: " << HDK::GeometricMultigridOperators::l2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::l2Norm<SolveReal>(rhsGrid, domainCellLabels) << std::endl;
 	}
 	else
 	{
@@ -533,8 +533,8 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 		MatrixVectorMultiply(residualGrid, solutionGrid);
 		AddScaledVector(residualGrid, rhsGrid, residualGrid, -1);
 
-		std::cout << "  L-infinity error: " << HDK::GeometricMultiGridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
-		std::cout << "  Relative L-2: " << HDK::GeometricMultiGridOperators::l2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultiGridOperators::l2Norm<SolveReal>(rhsGrid, domainCellLabels) << std::endl;
+		std::cout << "  L-infinity error: " << HDK::GeometricMultigridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
+		std::cout << "  Relative L-2: " << HDK::GeometricMultigridOperators::l2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::l2Norm<SolveReal>(rhsGrid, domainCellLabels) << std::endl;
 	    }
 	    else
 	    {
@@ -1390,7 +1390,7 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionA.constant(0);
 
 	    {
-		HDK::GeometricMultiGridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, 1, true);
+		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, 1, true);
 		mgSolver.setGradientWeights(dummyWeights);
 
 		mgSolver.applyVCycle(solutionA, rhsA);
@@ -1404,7 +1404,7 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.constant(0);
 
 	    {
-		HDK::GeometricMultiGridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, 1, true);
+		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, 1, true);
 		mgSolver.setGradientWeights(dummyWeights);
 
 		mgSolver.applyVCycle(solutionB, rhsB);
@@ -1556,7 +1556,7 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	std::cout << "  Apply one level of v-cycle" << std::endl;
 
 	// Pre-build multigrid preconditioner
-	HDK::GeometricMultiGridPoissonSolver mgSolver(domainCellLabels, 2 /* levels in v-cycle */, dx, 3 /* boundary width */);
+	HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, 2 /* levels in v-cycle */, dx, 3 /* boundary width */);
 	mgSolver.setGradientWeights(dummyWeights);
 
 	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
@@ -1629,7 +1629,7 @@ bool HDK_TestGeometricMultiGrid::solveGasSubclass(SIM_Engine &engine,
 	// Apply smoother
 	const int maxSmootherIterations = getMaxSmootherIterations();
 
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
     
 	const bool useGaussSeidelSmoothing = getUseGaussSeidelSmoothing();
 

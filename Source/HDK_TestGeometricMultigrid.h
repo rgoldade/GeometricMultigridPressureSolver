@@ -1,10 +1,10 @@
-#ifndef HDK_TEST_GEOMETRIC_MULTI_GRID_H
-#define HDK_TEST_GEOMETRIC_MULTI_GRID_H
+#ifndef HDK_TEST_GEOMETRIC_MULTIGRID_H
+#define HDK_TEST_GEOMETRIC_MULTIGRID_H
 
 #include <GAS/GAS_SubSolver.h>
 #include <GAS/GAS_Utils.h>
 
-class GAS_API HDK_TestGeometricMultiGrid : public GAS_SubSolver
+class GAS_API HDK_TestGeometricMultigrid : public GAS_SubSolver
 {
     // Common parameters
     GET_DATA_FUNC_I("gridSize", GridSize);
@@ -17,9 +17,9 @@ class GAS_API HDK_TestGeometricMultiGrid : public GAS_SubSolver
 
     // Conjugate gradient test
     GET_DATA_FUNC_B("testConjugateGradient", TestConjugateGradient);
-    GET_DATA_FUNC_B("useMultiGridPreconditioner", UseMultiGridPreconditioner);
+    GET_DATA_FUNC_B("useMultigridPreconditioner", UseMultigridPreconditioner);
     GET_DATA_FUNC_B("solveCGGeometrically", SolveCGGeometrically);
-    GET_DATA_FUNC_I("multiGridLevels", MultiGridLevels);
+    GET_DATA_FUNC_I("multigridLevels", MultigridLevels);
     GET_DATA_FUNC_F("solverTolerance", SolverTolerance);
     GET_DATA_FUNC_I("maxSolverIterations", MaxSolverIterations);
 
@@ -36,8 +36,8 @@ class GAS_API HDK_TestGeometricMultiGrid : public GAS_SubSolver
 
 public:
 
-    explicit HDK_TestGeometricMultiGrid(const SIM_DataFactory *factory);
-    virtual ~HDK_TestGeometricMultiGrid();
+    explicit HDK_TestGeometricMultigrid(const SIM_DataFactory *factory);
+    virtual ~HDK_TestGeometricMultigrid();
 
     // The overloaded callback that GAS_SubSolver will invoke to
     // perform our actual computation.  We are giving a single object
@@ -53,9 +53,9 @@ private:
     /// ensure useful constants like BaseClass are defined.
     static const SIM_DopDescription	*getDopDescription();
     DECLARE_STANDARD_GETCASTTOTYPE();
-    DECLARE_DATAFACTORY(HDK_TestGeometricMultiGrid,
+    DECLARE_DATAFACTORY(HDK_TestGeometricMultigrid,
 			GAS_SubSolver,
-			"HDK Test Geometric Multi Grid",
+			"HDK Test Geometric Multigrid",
 			getDopDescription());
 };
 #endif

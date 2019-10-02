@@ -1,8 +1,8 @@
-#include "HDK_GeometricMultiGridOperators.h"
+#include "HDK_GeometricMultigridOperators.h"
 
 using namespace SIM::FieldUtils;
 
-namespace HDK::GeometricMultiGridOperators {
+namespace HDK::GeometricMultigridOperators {
     
     SYS_FORCE_INLINE
     UT_Vector3I
@@ -308,7 +308,7 @@ namespace HDK::GeometricMultiGridOperators {
 			    {
 				UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-				assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < voxelRes[axis]);
+				assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < sourceCellLabels.getVoxelRes()[axis]);
 
 				if (sourceCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL &&
 				    visitedCells(adjacentCell) == UNVISITED_CELL)
@@ -511,4 +511,4 @@ namespace HDK::GeometricMultiGridOperators {
 
 	return true;
     }    
-} //namespace HDK::GeometricMultiGridOperators
+} //namespace HDK::GeometricMultigridOperators

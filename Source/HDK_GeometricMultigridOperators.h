@@ -1,11 +1,11 @@
-#ifndef HDK_GEOMETRIC_MULTI_GRID_OPERATIONS_H
-#define HDK_GEOMETRIC_MULTI_GRID_OPERATIONS_H
+#ifndef HDK_GEOMETRIC_MULTIGRID_OPERATIONS_H
+#define HDK_GEOMETRIC_MULTIGRID_OPERATIONS_H
 
 #include <SIM/SIM_FieldUtils.h>
 #include <UT/UT_ParallelUtil.h>
 #include <UT/UT_VoxelArray.h>
 
-namespace HDK::GeometricMultiGridOperators{
+namespace HDK::GeometricMultigridOperators{
 
     enum CellLabels {INTERIOR_CELL, EXTERIOR_CELL, DIRICHLET_CELL};
 

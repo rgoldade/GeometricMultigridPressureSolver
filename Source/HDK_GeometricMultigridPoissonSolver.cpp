@@ -1,14 +1,14 @@
-#include "HDK_GeometricMultiGridPoissonSolver.h"
+#include "HDK_GeometricMultigridPoissonSolver.h"
 
 #include <SIM/SIM_FieldUtils.h>
 #include <UT/UT_ParallelUtil.h>
 
-#include "HDK_GeometricMultiGridOperators.h"
+#include "HDK_GeometricMultigridOperators.h"
 
 namespace HDK
 {
     //
-    // Helper functions for multi grid
+    // Helper functions for multigrid
     //
 
     template<typename GridType>
@@ -88,7 +88,7 @@ namespace HDK
 			const UT_VoxelArray<int> &expandedCellLabels,
 			const UT_Vector3I &expandedOffset)
     {
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -195,7 +195,7 @@ namespace HDK
 			    const UT_VoxelArray<int> &expandedCellLabels,
 			    const UT_Vector3I &expandedOffset)
     {
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -309,7 +309,7 @@ namespace HDK
 			const UT_VoxelArray<exint> &gridIndices,
 			const UT_VoxelArray<int> &cellLabels)
     {
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -362,7 +362,7 @@ namespace HDK
 			const UT_VoxelArray<exint> &gridIndices,
 			const UT_VoxelArray<int> &cellLabels)
     {
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -409,7 +409,7 @@ namespace HDK
     }
 
 
-    GeometricMultiGridPoissonSolver::GeometricMultiGridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
+    GeometricMultigridPoissonSolver::GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
 									const int mgLevels,
 									const SolveReal dx,
 									const int boundarySmootherWidth,
@@ -423,7 +423,7 @@ namespace HDK
     , myTotalSmootherIterations(smootherIterations)
     , myUseGaussSeidel(useGaussSeidel)
     {
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
 	using namespace SIM::FieldUtils;
 
 	assert(myMGLevels > 0);
@@ -766,7 +766,7 @@ namespace HDK
     }
 
     void
-    GeometricMultiGridPoissonSolver::setGradientWeights(const UT_VoxelArray<StoreReal> (&gradientWeights)[3])
+    GeometricMultigridPoissonSolver::setGradientWeights(const UT_VoxelArray<StoreReal> (&gradientWeights)[3])
     {
 	myDoApplyGradientWeights = true;
 
@@ -821,11 +821,11 @@ namespace HDK
     }
 
     void
-    GeometricMultiGridPoissonSolver::applyVCycle(UT_VoxelArray<StoreReal> &solution,
+    GeometricMultigridPoissonSolver::applyVCycle(UT_VoxelArray<StoreReal> &solution,
 						    const UT_VoxelArray<StoreReal> &rhs,
 						    const bool useInitialGuess)
     {
-	using namespace HDK::GeometricMultiGridOperators;
+	using namespace HDK::GeometricMultigridOperators;
 
 #if !defined(NDEBUG)
 	for (int axis : {0,1,2})
