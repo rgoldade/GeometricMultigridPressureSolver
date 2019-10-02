@@ -6,8 +6,8 @@ set( library_name HDK_TestGeometricMultiGrid )
 
 # Add a library and its source files.
 add_library( ${library_name} SHARED
-    HDK_GeometricMultiGridOperations.cpp
-    HDK_GeometricMultiGridOperations.h
+    HDK_GeometricMultiGridOperators.cpp
+    HDK_GeometricMultiGridOperators.h
     HDK_GeometricMultiGridPoissonSolver.cpp
 	HDK_GeometricMultiGridPoissonSolver.h
     HDK_TestGeometricMultiGrid.cpp

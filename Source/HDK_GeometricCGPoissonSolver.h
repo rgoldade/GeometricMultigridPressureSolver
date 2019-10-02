@@ -1,7 +1,7 @@
 #ifndef HDK_GEOMETRIC_CONJUGATE_GRADIENT_SOLVER_H
 #define HDK_GEOMETRIC_CONJUGATE_GRADIENT_SOLVER_H
 
-#include "HDK_GeometricMultiGridOperations.h"
+#include "HDK_GeometricMultiGridOperators.h"
 
 namespace HDK
 {
@@ -18,10 +18,10 @@ namespace HDK
 					    DotProductFunctor &dotProductFunctor,
 					    L2NormFunctor &l2NormFunctor,
 					    AddScaledVectorFunctor &addScaledVectorFunctor,
-					    const SolveReal threshold,
+					    const StoreReal tolerance,
 					    const int maxIterations)
     {
-	using namespace HDK::GeometricMultiGridOperations;
+	using namespace GeometricMultiGridOperators;
 	using SolveReal = double;
 
 	UT_Vector3I voxelRes = solutionGrid.getVoxelRes();
@@ -42,9 +42,9 @@ namespace HDK
 	addScaledVectorFunctor(residualGrid, rhsGrid, residualGrid, -1);
 
 	SolveReal residualNorm = l2NormFunctor(residualGrid);
-    	SolveReal threshold = tolerance * rhsNorm;
+    	SolveReal threshold = SolveReal(tolerance) * rhsNorm;
 
-	if (residualNorm2 < threshold)
+	if (residualNorm < threshold)
 	{
 	    std::cout << "Residual already below error: " << residualNorm / rhsNorm << std::endl;
 	    return;
@@ -53,6 +53,7 @@ namespace HDK
 	// Apply preconditioner for initial search direction
 	UT_VoxelArray<StoreReal> pGrid;
 	pGrid.size(voxelRes[0], voxelRes[1], voxelRes[2]);
+	pGrid.constant(0);
 
 	preconditionerFunctor(pGrid, residualGrid);
 
@@ -77,7 +78,10 @@ namespace HDK
 	    addScaledVectorFunctor(solutionGrid, solutionGrid, pGrid, alpha);
 
 	    residualNorm = l2NormFunctor(residualGrid);
-	    if (residualNorm2 < tolerance)
+
+	    std::cout << "  Iteration: " << iteration << ". Residual: " << residualNorm << std::endl;
+
+	    if (residualNorm < tolerance)
 		break;
 
 	    preconditionerFunctor(zGrid, residualGrid);
@@ -88,12 +92,18 @@ namespace HDK
 	    // Store rho
 	    rho = rhoNew;
 
-	    addScaledVectorFunctor(pGrid, zGrid, pGrid, beta)
+	    addScaledVectorFunctor(pGrid, zGrid, pGrid, beta);
 	}
 
     	std::cout << "Iterations: " << iteration << std::endl;
 	SolveReal error = residualNorm / rhsNorm;
-	std::cout << "Relative L2 Error: " << error << std::endl;
+	std::cout << "Drifted relative L2 Error: " << error << std::endl;
+
+	// Recompute residual
+	matrixVectorMultiplyFunctor(residualGrid, solutionGrid);
+	addScaledVectorFunctor(residualGrid, rhsGrid, residualGrid, -1);
+	error = l2NormFunctor(residualGrid) / rhsNorm;
+	std::cout << "Recomputed relative L2 Error: " << error << std::endl;
     }
 }
 

@@ -1,7 +1,7 @@
 #ifndef HDK_GEOMETRIC_MULTI_GRID_POISSON_SOLVER_H
 #define HDK_GEOMETRIC_MULTI_GRID_POISSON_SOLVER_H
 
-#include "Eigen/Sparse"
+#include <Eigen/Sparse>
 
 #include <UT/UT_VoxelArray.h>
 
@@ -13,7 +13,7 @@ namespace HDK
 
 	using StoreReal = float;
 	using SolveReal = double;
-	using Vector = Eigen::VectorXd;
+	using Vector = std::conditional<std::is_same<SolveReal, float>::value, Eigen::VectorXf, Eigen::VectorXd>::type;
 
     public:
 
@@ -28,7 +28,7 @@ namespace HDK
 	void setGradientWeights(const UT_VoxelArray<StoreReal> (&gradientWeights)[3]);
 
 	void applyVCycle(UT_VoxelArray<StoreReal> &solutionVector,
-			    UT_VoxelArray<StoreReal> &rhsVector,
+			    const UT_VoxelArray<StoreReal> &rhsVector,
 			    const bool useInitialGuess = false);
 
     private:

@@ -6,12 +6,22 @@
 
 class GAS_API HDK_TestGeometricMultiGrid : public GAS_SubSolver
 {
-
     // Common parameters
     GET_DATA_FUNC_I("gridSize", GridSize);
     GET_DATA_FUNC_B("useComplexDomain", UseComplexDomain);
     GET_DATA_FUNC_B("useSolidSphere", UseSolidSphere);
     GET_DATA_FUNC_F("sphereRadius", SphereRadius);
+
+    GET_DATA_FUNC_B("useRandomInitialGuess", UseRandomInitialGuess);
+    GET_DATA_FUNC_F("deltaFunctionAmplitude", DeltaFunctionAmplitude);
+
+    // Conjugate gradient test
+    GET_DATA_FUNC_B("testConjugateGradient", TestConjugateGradient);
+    GET_DATA_FUNC_B("useMultiGridPreconditioner", UseMultiGridPreconditioner);
+    GET_DATA_FUNC_B("solveCGGeometrically", SolveCGGeometrically);
+    GET_DATA_FUNC_I("multiGridLevels", MultiGridLevels);
+    GET_DATA_FUNC_F("solverTolerance", SolverTolerance);
+    GET_DATA_FUNC_I("maxSolverIterations", MaxSolverIterations);
 
     // Symmetry
     GET_DATA_FUNC_B("testSymmetry", TestSymmetry);
@@ -21,8 +31,6 @@ class GAS_API HDK_TestGeometricMultiGrid : public GAS_SubSolver
 
     // Smoother test parameters
     GET_DATA_FUNC_B("testSmoother", TestSmoother);
-    GET_DATA_FUNC_B("useRandomInitialGuess", UseRandomInitialGuess);
-    GET_DATA_FUNC_F("deltaFunctionAmplitude", DeltaFunctionAmplitude);
     GET_DATA_FUNC_I("maxSmootherIterations", MaxSmootherIterations);
     GET_DATA_FUNC_B("useGaussSeidelSmoothing", UseGaussSeidelSmoothing);
 
