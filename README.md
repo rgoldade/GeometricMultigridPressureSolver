@@ -6,3 +6,4 @@ This is a geometric multigrid solver for a standard scalar poisson problem that 
 1. Optimize downstroke of the multigrid v-cycle when using a zero initial guess (as is the case when using MG as a preconditioner).
 2. Factor out dx terms
 3. Remove weights term from interior smoother (only needed at the boundary for ghost fluid and cut-cells)
+4. Write a free surface pressure solver plug-in utilizing the geometric MG preconditioned CG solver
