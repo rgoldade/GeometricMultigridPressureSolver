@@ -20,12 +20,11 @@ namespace HDK
 	GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
 					const int mgLevels,
 					const SolveReal dx,
-					const int boundarySmootherWidth = 2,
-					const int boundarySmootherIterations = 1,
-					const int smootherIterations = 1,
-					const bool useGaussSeidel = false);
+					const int boundarySmootherWidth,
+					const int boundarySmootherIterations,
+					const bool useGaussSeidel);
 
-	void setGradientWeights(const UT_VoxelArray<StoreReal> (&gradientWeights)[3]);
+	void setBoundaryWeights(const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights);
 
 	void applyVCycle(UT_VoxelArray<StoreReal> &solutionVector,
 			    const UT_VoxelArray<StoreReal> &rhsVector,
@@ -43,14 +42,13 @@ namespace HDK
 	int myMGLevels;
 	UT_Vector3I myExteriorOffset;
 
-	bool myDoApplyGradientWeights;
-	UT_VoxelArray<StoreReal> myFineGradientWeights[3];
+	bool myDoApplyBoundaryWeights;
+	std::array<UT_VoxelArray<StoreReal>, 3> myFineBoundaryWeights;
 
 	UT_Array<SolveReal> myDx;
 
 	const int myBoundarySmootherWidth;
 	const int myBoundarySmootherIterations;
-	const int myTotalSmootherIterations;
 
 	const bool myUseGaussSeidel;
 

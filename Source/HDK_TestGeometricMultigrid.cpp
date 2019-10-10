@@ -12,6 +12,9 @@
 #include <UT/UT_DSOVersion.h>
 #include <UT/UT_ParallelUtil.h>
 #include <UT/UT_PerfMonAutoEvent.h>
+
+
+// TODO: remove stop watch
 #include <UT/UT_StopWatch.h>
 
 #include "HDK_GeometricCGPoissonSolver.h"
@@ -209,6 +212,26 @@ buildComplexDomain(const int gridSize,
 	    domainCellLabels.setValue(cell, CellLabels::INTERIOR_CELL);
     });
 
+    // Set boundary cells
+    forEachVoxelRange(UT_Vector3I(1), UT_Vector3I(gridSize) - UT_Vector3I(1), [&](const UT_Vector3I &cell)
+    {
+	if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+	{
+	    for (int axis : {0,1,2})
+		for (int direction : {0,1})
+		{
+		    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
+
+		    if (domainCellLabels(adjacentCell) == DIRICHLET_CELL ||
+			domainCellLabels(adjacentCell) == EXTERIOR_CELL)
+		    {
+			domainCellLabels.setValue(cell, CellLabels::BOUNDARY_CELL);
+			return;
+		    }
+		}
+	}
+    });
+
     return domainCellLabels;
 }
 
@@ -290,6 +313,27 @@ buildSimpleDomain(const int gridSize,
 	domainCellLabels.setValue(cell, CellLabels::INTERIOR_CELL);
     });
 
+    // Set boundary cells
+
+    forEachVoxelRange(UT_Vector3I(1), UT_Vector3I(gridSize) - UT_Vector3I(1), [&](const UT_Vector3I &cell)
+    {
+	if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+	{
+	    for (int axis : {0,1,2})
+		for (int direction : {0,1})
+		{
+		    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
+
+		    if (domainCellLabels(adjacentCell) == DIRICHLET_CELL ||
+			domainCellLabels(adjacentCell) == EXTERIOR_CELL)
+		    {
+			domainCellLabels.setValue(cell, CellLabels::BOUNDARY_CELL);
+			return;
+		    }
+		}
+	}
+    });
+    
     return domainCellLabels;
 }
 
@@ -318,6 +362,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
     else
 	domainCellLabels = buildSimpleDomain(gridSize, 1 /*Dirichlet band*/);
 
+    assert(unitTestBoundaryCells(domainCellLabels));
+
     if (getTestConjugateGradient())
     {
 	std::cout << "\n// Testing conjugate gradient" << std::endl;
@@ -335,7 +381,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	
 	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 	    {
-		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    solutionGrid.setValue(cell, distribution(generator));
 
 	    });
@@ -364,7 +411,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	}
 
 	// Build dummy weights
-	UT_VoxelArray<StoreReal> dummyWeights[3];
+	std::array<UT_VoxelArray<StoreReal>, 3> dummyWeights;
 	for (int axis : {0,1,2})
 	{
 	    UT_Vector3I size(gridSize, gridSize, gridSize);
@@ -383,7 +430,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		    if (cell[axis] < 0 || cell[axis] >= domainCellLabels.getVoxelRes()[axis])
 			continue;
 
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 			isInterior = true;
 		    else if (domainCellLabels(cell) == CellLabels::EXTERIOR_CELL)
 			isExterior = true;
@@ -397,7 +445,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	auto MatrixVectorMultiply = [&domainCellLabels, &dummyWeights, dx](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 	{
 	    // Matrix-vector multiplication
-	    HDK::GeometricMultigridOperators::applyPoissonMatrix<SolveReal>(destination, source, domainCellLabels, dummyWeights, dx);
+	    HDK::GeometricMultigridOperators::applyPoissonMatrix<SolveReal>(destination, source, domainCellLabels, dx, &dummyWeights);
 	};
 
 	auto DotProduct = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid0, const UT_VoxelArray<StoreReal> &grid1) -> fpreal32
@@ -406,9 +454,16 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    return HDK::GeometricMultigridOperators::dotProduct<SolveReal>(grid0, grid1, domainCellLabels);
 	};
 
-	auto L2Norm = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid) -> fpreal32
+	auto SquaredL2Norm = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid) -> fpreal32
 	{
-	    return HDK::GeometricMultigridOperators::l2Norm<SolveReal>(grid, domainCellLabels);
+	    return HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(grid, domainCellLabels);
+	};
+
+	auto AddToVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
+						const UT_VoxelArray<StoreReal> &source,
+						const fpreal32 scale)
+	{
+	    HDK::GeometricMultigridOperators::addToVector<SolveReal>(destination, source, scale, domainCellLabels);
 	};
 
 	auto AddScaledVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
@@ -416,7 +471,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 						    const UT_VoxelArray<StoreReal> &scaledSource,
 						    const fpreal32 scale)
 	{
-	    HDK::GeometricMultigridOperators::addVectors(destination, unscaledSource, scaledSource, scale, domainCellLabels);
+	    HDK::GeometricMultigridOperators::addVectors<SolveReal>(destination, unscaledSource, scaledSource, scale, domainCellLabels);
 	};
 
 	if (getUseMultigridPreconditioner())
@@ -424,11 +479,26 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    UT_StopWatch timer;
 	    timer.start();
 
-	    // TODO: add gauss seidel option
+	    UT_StopWatch prebuildtimer;
+	    prebuildtimer.start();
 
 	    // Pre-build multigrid preconditioner
-	    HDK::GeometricMultigridPoissonSolver mgPreconditioner(domainCellLabels, getMultigridLevels(), dx, 2, 1, 1, true);
-	    mgPreconditioner.setGradientWeights(dummyWeights);
+	    HDK::GeometricMultigridPoissonSolver mgPreconditioner(domainCellLabels,
+								    getMultigridLevels(),
+								    dx,
+								    3 /* boundary width */,
+								    3 /* boundary smoother iterations */,
+								    true /* use Gauss Seidel smoother */);
+	    
+	    auto buildtime = prebuildtimer.stop();
+	    std::cout << "  MG pre-build time: " << buildtime << std::endl;
+	    prebuildtimer.clear();
+	    prebuildtimer.start();
+
+	    mgPreconditioner.setBoundaryWeights(dummyWeights);
+
+	    buildtime = prebuildtimer.stop();
+	    std::cout << "  MG pre-build set weights time: " << buildtime << std::endl;
 
 	    auto MultigridPreconditioner = [&mgPreconditioner](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 	    {
@@ -441,7 +511,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 						    MatrixVectorMultiply,
 						    MultigridPreconditioner,
 						    DotProduct,
-						    L2Norm,
+						    SquaredL2Norm,
+						    AddToVector,
 						    AddScaledVector,
 						    fpreal32(getSolverTolerance()),
 						    getMaxSolverIterations());
@@ -458,7 +529,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    AddScaledVector(residualGrid, rhsGrid, residualGrid, -1);
 
 	    std::cout << "  L-infinity error: " << HDK::GeometricMultigridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
-	    std::cout << "  Relative L-2: " << HDK::GeometricMultigridOperators::l2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::l2Norm<SolveReal>(rhsGrid, domainCellLabels) << std::endl;
+	    std::cout << "  Relative L-2: " << SYSsqrt(HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(rhsGrid, domainCellLabels)) << std::endl;
 	}
 	else
 	{
@@ -474,7 +545,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 		{
 		    fpreal gridScalar = 1. / (dx * dx);
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			fpreal diagonal = 0;
 			for (int axis : {0, 1, 2})
@@ -487,12 +559,11 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 
-				if (domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-				    domainCellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL)
+				if (domainCellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL)
 				{
 				    diagonal += dummyWeights[axis](face);
 				}
-				else assert(dummyWeights[axis](face) == 0);
+				else ++diagonal;
 			    }
 			diagonal *= gridScalar;
 			diagonalPrecondGrid.setValue(cell, 1. / diagonal);
@@ -502,11 +573,53 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		auto DiagonalPreconditioner = [&domainCellLabels, &diagonalPrecondGrid](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 		{
 		    assert(destination.getVoxelRes() == source.getVoxelRes());
-		    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
+
+		    const int tileCount = domainCellLabels.numTiles();
+
+		    UT_Interrupt *boss = UTgetInterrupt();
+
+		    UTparallelForEachNumber(tileCount, [&](const UT_BlockedRange<int> &range)
 		    {
-			if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+			UT_VoxelArrayIterator<int> vit;
+			vit.setConstArray(&domainCellLabels);
+
+			UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+			destinationProbe.setArray(&destination);
+
+			UT_VoxelProbe<StoreReal, true /* read */, false /* write */, false> sourceProbe;
+			sourceProbe.setConstArray(&source);
+
+			UT_VoxelProbe<StoreReal, true /* read */, false /* write */, false> precondProbe;
+			precondProbe.setConstArray(&diagonalPrecondGrid);
+
+			for (int i = range.begin(); i != range.end(); ++i)
 			{
-			    destination.setValue(cell, source(cell) * diagonalPrecondGrid(cell));
+			    vit.myTileStart = i;
+			    vit.myTileEnd = i + 1;
+			    vit.rewind();
+
+			    if (boss->opInterrupt())
+				break;
+
+			    if (!vit.isTileConstant() ||
+				vit.getValue() == CellLabels::INTERIOR_CELL ||
+				vit.getValue() == CellLabels::BOUNDARY_CELL)
+			    {
+				SolveReal localSqr = 0;
+
+				for (; !vit.atEnd(); vit.advance())
+				{
+				    if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+					vit.getValue() == CellLabels::BOUNDARY_CELL)
+				    {
+					destinationProbe.setIndex(vit);
+					sourceProbe.setIndex(vit);
+					precondProbe.setIndex(vit);
+
+					destinationProbe.setValue(fpreal(sourceProbe.getValue()) * fpreal(precondProbe.getValue()));
+				    }
+				}
+			    }
 			}
 		    });
 		};
@@ -516,7 +629,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 							MatrixVectorMultiply,
 							DiagonalPreconditioner,
 							DotProduct,
-							L2Norm,
+							SquaredL2Norm,
+							AddToVector,
 							AddScaledVector,
 							fpreal32(getSolverTolerance()),
 							getMaxSolverIterations());
@@ -546,17 +660,19 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 		{
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 			solverIndices.setValue(cell, interiorCellCount++);
 		});
 
-		fpreal32 gridScalar = 1. / (dx * dx);
+		fpreal32 gridScalar = 1.; // / (dx * dx);
 
 		std::vector<Eigen::Triplet<StoreReal>> sparseElements;
 
 		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 		{
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			fpreal32 diagonal = 0;
 			exint index = solverIndices(cell);
@@ -567,8 +683,11 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			    {
 				UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
+				assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
+
 				auto adjacentCellLabel = domainCellLabels(adjacentCell);
-				if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
+				if (adjacentCellLabel == CellLabels::INTERIOR_CELL ||
+				    adjacentCellLabel == CellLabels::BOUNDARY_CELL)
 				{
 				    exint adjacentIndex = solverIndices(adjacentCell);
 				    assert(adjacentIndex >= 0);
@@ -587,7 +706,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 		{
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = solverIndices(cell);
 			assert(index >= 0);
@@ -648,7 +768,6 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	rhsA.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	rhsA.constant(0);
 
-
 	UT_VoxelArray<StoreReal> rhsB;
 	rhsB.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	rhsB.constant(0);
@@ -671,7 +790,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	}
 
 	// Build dummy weights
-	UT_VoxelArray<StoreReal> dummyWeights[3];
+	std::array<UT_VoxelArray<StoreReal>, 3> dummyWeights;
 	for (int axis : {0,1,2})
 	{
 	    UT_Vector3I size(expandedGridSize, expandedGridSize, expandedGridSize);
@@ -690,7 +809,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		    if (cell[axis] < 0 || cell[axis] >= expandedDomainCellLabels.getVoxelRes()[axis])
 			continue;
 
-		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 			isInterior = true;
 		    else if (expandedDomainCellLabels(cell) == CellLabels::EXTERIOR_CELL)
 			isExterior = true;
@@ -711,162 +831,99 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionB.constant(0);
 
+	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(expandedDomainCellLabels, 2);
+
+	    // Uncompress tiles on the boundary
+	    uncompressBoundaryTiles(solutionA, boundaryCells);
+	    uncompressBoundaryTiles(solutionB, boundaryCells);
+
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, expandedDomainCellLabels, boundaryCells, dx);
+
 	    // Test Jacobi symmetry
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionA,
-						    rhsA,
-						    expandedDomainCellLabels,
-						    dummyWeights,
-						    dx);
+	    interiorJacobiPoissonSmoother<SolveReal>(solutionA,
+							rhsA,
+							expandedDomainCellLabels,
+							dx);
 
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionB,
-						    rhsB,
-						    expandedDomainCellLabels,
-						    dummyWeights,
-						    dx);
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, expandedDomainCellLabels, boundaryCells, dx);
 
+
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, expandedDomainCellLabels, boundaryCells, dx);
+
+	    interiorJacobiPoissonSmoother<SolveReal>(solutionB,
+							rhsB,
+							expandedDomainCellLabels,
+							dx);
+
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, expandedDomainCellLabels, boundaryCells, dx);
 
 	    StoreReal dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
 	    StoreReal dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
 
-	    std::cout << "  Weighted Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
-
-	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
-	}
-
-	{
-	    UT_VoxelArray<StoreReal> solutionA;
-	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
-	    solutionA.constant(0);
-
-	    UT_VoxelArray<StoreReal> solutionB;
-	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
-	    solutionB.constant(0);
-
-	    // Test Jacobi symmetry
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionA,
-						    rhsA,
-						    expandedDomainCellLabels,
-						    dx);
-
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionB,
-						    rhsB,
-						    expandedDomainCellLabels,
-						    dx);
-
-	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
-	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
-	    
 	    std::cout << "  Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
-
 	{
 	    UT_VoxelArray<StoreReal> solutionA;
 	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionA.constant(0);
-	    
+
 	    UT_VoxelArray<StoreReal> solutionB;
 	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionB.constant(0);
 
-	    UT_Array<UT_Vector3I> tempInteriorCells;
+	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(expandedDomainCellLabels, 2);
 
-	    forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
-	    {
-		if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
-		{
-		    tempInteriorCells.append(cell);
-		}
-	    });
+	    // Uncompress tiles on the boundary
+	    uncompressBoundaryTiles(solutionA, boundaryCells);
+	    uncompressBoundaryTiles(solutionB, boundaryCells);
 
-	    // Uncompress tiles for solution grids
-	    for (exint i = 0; i < tempInteriorCells.size(); ++i)
-	    {
-		UT_Vector3I cell = tempInteriorCells[i];
-		int tileNumber = solutionA.indexToLinearTile(cell[0], cell[1], cell[2]);
-		if (solutionA.getLinearTile(tileNumber)->isConstant())
-		    solutionA.getLinearTile(tileNumber)->uncompress();
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
+							rhsA,
+							expandedDomainCellLabels,
+							boundaryCells,
+							dx,
+							&dummyWeights);
+	    // Test Jacobi symmetry
+	    interiorJacobiPoissonSmoother<SolveReal>(solutionA,
+							rhsA,
+							expandedDomainCellLabels,
+							dx);
 
-		assert(tileNumber == solutionB.indexToLinearTile(cell[0], cell[1], cell[2]));
-		if (solutionB.getLinearTile(tileNumber)->isConstant())
-		    solutionB.getLinearTile(tileNumber)->uncompress();
-	    }
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
+							rhsA,
+							expandedDomainCellLabels,
+							boundaryCells,
+							dx,
+							&dummyWeights);
 
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionA,
-						    rhsA,
-						    expandedDomainCellLabels,
-						    tempInteriorCells,
-						    dummyWeights,
-						    dx);
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
+							rhsB,
+							expandedDomainCellLabels,
+							boundaryCells,
+							dx,
+							&dummyWeights);
 
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionB,
-						    rhsB,
-						    expandedDomainCellLabels,
-						    tempInteriorCells,
-						    dummyWeights,
-						    dx);
+	    interiorJacobiPoissonSmoother<SolveReal>(solutionB,
+							rhsB,
+							expandedDomainCellLabels,
+							dx);
+
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
+							rhsB,
+							expandedDomainCellLabels,
+							boundaryCells,
+							dx,
+							&dummyWeights);
 
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
 	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
-
-	    std::cout << "  Weighted boundary Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
-
-	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
-	}
-
-	{
-	    UT_VoxelArray<StoreReal> solutionA;
-	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
-	    solutionA.constant(0);
 	    
-	    UT_VoxelArray<StoreReal> solutionB;
-	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
-	    solutionB.constant(0);
-
-	    UT_Array<UT_Vector3I> tempInteriorCells;
-
-	    forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
-	    {
-		if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
-		{
-		    tempInteriorCells.append(cell);
-		}
-	    });
-
-	    // Uncompress tiles for solution grids
-	    for (exint i = 0; i < tempInteriorCells.size(); ++i)
-	    {
-		UT_Vector3I cell = tempInteriorCells[i];
-		int tileNumber = solutionA.indexToLinearTile(cell[0], cell[1], cell[2]);
-		if (solutionA.getLinearTile(tileNumber)->isConstant())
-		    solutionA.getLinearTile(tileNumber)->uncompress();
-
-		assert(tileNumber == solutionB.indexToLinearTile(cell[0], cell[1], cell[2]));
-		if (solutionB.getLinearTile(tileNumber)->isConstant())
-		    solutionB.getLinearTile(tileNumber)->uncompress();
-	    }
-
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionA,
-						    rhsA,
-						    expandedDomainCellLabels,
-						    tempInteriorCells,
-						    dx);
-
-	    dampedJacobiPoissonSmoother<SolveReal>(solutionB,
-						    rhsB,
-						    expandedDomainCellLabels,
-						    tempInteriorCells,
-						    dx);
-
-	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
-	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
-
-	    std::cout << "  Boundary Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
+	    std::cout << "  Weighted Boundary Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
-
 	// Test Gauss Seidel smoother
 	{
 	    UT_VoxelArray<StoreReal> solutionA;
@@ -877,75 +934,100 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionB.constant(0);
 
-	    // Test Jacobi symmetry
+	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(expandedDomainCellLabels, 2);
+
+	    // Uncompress tiles on the boundary
+	    uncompressBoundaryTiles(solutionA, boundaryCells);
+	    uncompressBoundaryTiles(solutionB, boundaryCells);
+
 	    for (int iteration = 0; iteration < 4; ++iteration)
 	    {
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
 							    rhsA,
 							    expandedDomainCellLabels,
-							    dummyWeights,
+							    boundaryCells,
 							    dx,
-							    true /* smooth odd tiles */,
-							    true /* iterate forward */);
+							    &dummyWeights);
 
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    expandedDomainCellLabels,
-							    dummyWeights,
-							    dx,
-							    false /* smooth odd tiles */,
-							    true /* iterate forward */);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+								    rhsA,
+								    expandedDomainCellLabels,
+								    dx,
+								    true /* smooth odd tiles */,
+								    true /* iterate forward */);
 
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    expandedDomainCellLabels,
-							    dummyWeights,
-							    dx,
-							    false /* smooth odd tiles */,
-							    false /* iterate forward */);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+								    rhsA,
+								    expandedDomainCellLabels,
+								    dx,
+								    false /* smooth even tiles */,
+								    true /* iterate forward */);
 
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+								    rhsA,
+								    expandedDomainCellLabels,
+								    dx,
+								    false /* smooth even tiles */,
+								    false /* iterate forward */);
+
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+								    rhsA,
+								    expandedDomainCellLabels,
+								    dx,
+								    true /* smooth odd tiles */,
+								    false /* iterate forward */);
+
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
 							    rhsA,
 							    expandedDomainCellLabels,
-							    dummyWeights,
+							    boundaryCells,
 							    dx,
-							    true /* smooth odd tiles */,
-							    false /* iterate forward */);
+							    &dummyWeights);
 	    }
 
 	    for (int iteration = 0; iteration < 4; ++iteration)
 	    {
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
 							    rhsB,
 							    expandedDomainCellLabels,
-							    dummyWeights,
+							    boundaryCells,
 							    dx,
-							    true /* smooth odd tiles */,
-							    true /* iterate forward */);
+							    &dummyWeights);
 
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    expandedDomainCellLabels,
-							    dummyWeights,
-							    dx,
-							    false /* smooth odd tiles */,
-							    true /* iterate forward */);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+								    rhsB,
+								    expandedDomainCellLabels,
+								    dx,
+								    true /* smooth odd tiles */,
+								    true /* iterate forward */);
 
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    expandedDomainCellLabels,
-							    dummyWeights,
-							    dx,
-							    false /* smooth odd tiles */,
-							    false /* iterate forward */);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+								    rhsB,
+								    expandedDomainCellLabels,
+								    dx,
+								    false /* smooth even tiles */,
+								    true /* iterate forward */);
 
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+								    rhsB,
+								    expandedDomainCellLabels,
+								    dx,
+								    false /* smooth even tiles */,
+								    false /* iterate forward */);
+
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+								    rhsB,
+								    expandedDomainCellLabels,
+								    dx,
+								    true /* smooth odd tiles */,
+								    false /* iterate forward */);
+		
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
 							    rhsB,
 							    expandedDomainCellLabels,
-							    dummyWeights,
+							    boundaryCells,
 							    dx,
-							    true /* smooth odd tiles */,
-							    false /* iterate forward */);
+							    &dummyWeights);							    
 	    }
 
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
@@ -955,87 +1037,6 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
-
-	{
-	    UT_VoxelArray<StoreReal> solutionA;
-	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
-	    solutionA.constant(0);
-	    
-	    UT_VoxelArray<StoreReal> solutionB;
-	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
-	    solutionB.constant(0);
-
-	    for (int iteration = 0; iteration < 4; ++iteration)
-	    {
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    expandedDomainCellLabels,
-							    dx,
-							    true /* smooth odd tiles */,
-							    true /* iterate forward */);
-
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    expandedDomainCellLabels,
-							    dx,
-							    false /* smooth odd tiles */,
-							    true /* iterate forward */);
-
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    expandedDomainCellLabels,
-							    dx,
-							    false /* smooth odd tiles */,
-							    false /* iterate forward */);
-
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    expandedDomainCellLabels,
-							    dx,
-							    true /* smooth odd tiles */,
-							    false /* iterate forward */);
-	    }
-
-	    for (int iteration = 0; iteration < 4; ++iteration)
-	    {
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    expandedDomainCellLabels,
-							    dx,
-							    true /* smooth odd tiles */,
-							    true /* iterate forward */);
-
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    expandedDomainCellLabels,
-							    dx,
-							    false /* smooth odd tiles */,
-							    true /* iterate forward */);
-
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    expandedDomainCellLabels,
-							    dx,
-							    false /* smooth odd tiles */,
-							    false /* iterate forward */);
-
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    expandedDomainCellLabels,
-							    dx,
-							    true /* smooth odd tiles */,
-							    false /* iterate forward */);
-	    }
-
-
-	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
-	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
-
-	    std::cout << "  Gauss Seidel smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
-
-	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
-	}
-
 	{
 	    exint interiorCellCount = 0;
 	    UT_VoxelArray<exint> directSolverIndices;
@@ -1044,7 +1045,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
 	    {
-		if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL||
+		    expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    directSolverIndices.setValue(cell, interiorCellCount++);
 	    });
 
@@ -1054,7 +1056,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    fpreal32 gridScale = 1. / (dx * dx);
 	    forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
 	    {
-		if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		{
 		    fpreal32 diagonal = 0;
 		    int index = directSolverIndices(cell);
@@ -1064,8 +1067,9 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			{
 			    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-			    auto cellLabels = expandedDomainCellLabels(adjacentCell);
-			    if (cellLabels == CellLabels::INTERIOR_CELL)
+			    auto adjacentCellLabels = expandedDomainCellLabels(adjacentCell);
+			    if (adjacentCellLabels == CellLabels::INTERIOR_CELL ||
+				adjacentCellLabels == CellLabels::BOUNDARY_CELL)
 			    {
 				exint adjacentIndex = directSolverIndices(adjacentCell);
 				assert(adjacentIndex >= 0);
@@ -1073,7 +1077,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				sparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -gridScale));
 				diagonal += gridScale;
 			    }
-			    else if (cellLabels == CellLabels::DIRICHLET_CELL)
+			    else if (adjacentCellLabels == CellLabels::DIRICHLET_CELL)
 				diagonal += gridScale;
 			}
 
@@ -1104,7 +1108,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		
 		forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
 		{
-		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1117,7 +1122,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
 		{
-		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1132,7 +1138,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		
 		forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
 		{
-		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1145,7 +1152,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		forEachVoxelRange(UT_Vector3I(exint(0)), UT_Vector3I(exint(expandedGridSize)), [&](const UT_Vector3I &cell)
 		{
-		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (expandedDomainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+			expandedDomainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1162,11 +1170,13 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
-	
 	{
-		// Test down and up sampling
+	    // Test down and up sampling
 	    UT_VoxelArray<int> coarseDomainLabels = buildCoarseCellLabels(expandedDomainCellLabels);
 	    
+	    assert(unitTestBoundaryCells(coarseDomainLabels) && unitTestBoundaryCells(expandedDomainCellLabels));
+	    assert(unitTestCoarsening(coarseDomainLabels, expandedDomainCellLabels));
+
 	    UT_VoxelArray<StoreReal> solutionA;
 	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionA.constant(0);
@@ -1201,12 +1211,15 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
-
 	{
 	    using Vector = std::conditional<std::is_same<SolveReal, float>::value, Eigen::VectorXf, Eigen::VectorXd>::type;
 
 	    // Test single level correction
 	    UT_VoxelArray<int> coarseDomainLabels = buildCoarseCellLabels(expandedDomainCellLabels);
+
+	    assert(unitTestBoundaryCells(coarseDomainLabels) && unitTestBoundaryCells(expandedDomainCellLabels));
+	    assert(unitTestCoarsening(coarseDomainLabels, expandedDomainCellLabels));
+
 	    UT_Vector3I coarseGridSize = coarseDomainLabels.getVoxelRes();
 
 	    exint interiorCellCount = 0;
@@ -1217,7 +1230,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 	    {
-		if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    directSolverIndices.setValue(cell, interiorCellCount++);
 	    });
 
@@ -1226,7 +1240,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    fpreal32 gridScale = 1. / (dx * dx);
 	    forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 	    {
-		if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		{
 		    fpreal32 diagonal = 0;
 		    int index = directSolverIndices(cell);
@@ -1236,8 +1251,11 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			{
 			    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-			    auto cellLabels = coarseDomainLabels(adjacentCell);
-			    if (cellLabels == CellLabels::INTERIOR_CELL)
+			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < coarseGridSize[axis]);
+
+			    auto adjacentCellLabels = coarseDomainLabels(adjacentCell);
+			    if (adjacentCellLabels == CellLabels::INTERIOR_CELL ||
+				adjacentCellLabels == CellLabels::BOUNDARY_CELL)
 			    {
 				exint adjacentIndex = directSolverIndices(adjacentCell);
 				assert(adjacentIndex >= 0);
@@ -1245,7 +1263,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				sparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -gridScale));
 				diagonal += gridScale;
 			    }
-			    else if (cellLabels == CellLabels::DIRICHLET_CELL)
+			    else if (adjacentCellLabels == CellLabels::DIRICHLET_CELL)
 				diagonal += gridScale;
 			}
 
@@ -1253,7 +1271,6 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		}
 	    });
 
-	    // Solve system	    
 	    Eigen::SparseMatrix<SolveReal> sparseMatrix(interiorCellCount, interiorCellCount);
 	    sparseMatrix.setFromTriplets(sparseElements.begin(), sparseElements.end());
 	    sparseMatrix.makeCompressed();
@@ -1269,16 +1286,31 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionB.constant(0);
 
+	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(expandedDomainCellLabels, 2);
+
+	    // Uncompress tiles on the boundary
+	    uncompressBoundaryTiles(solutionA, boundaryCells);
+	    uncompressBoundaryTiles(solutionB, boundaryCells);
+
 	    {
-		// Pre-smooth to get an initial guess
-		dampedJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, expandedDomainCellLabels, dummyWeights, dx);
+		interiorJacobiPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    expandedDomainCellLabels,
+							    dx);
+
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    expandedDomainCellLabels,
+							    boundaryCells,
+							    dx,
+							    &dummyWeights);
 
 		// Compute new residual
 		UT_VoxelArray<StoreReal> residual;
 		residual.size(expandedGridSize, expandedGridSize, expandedGridSize);
 		residual.constant(0);
 
-		computePoissonResidual<SolveReal>(residual, solutionA, rhsA, expandedDomainCellLabels, dummyWeights, dx);
+		computePoissonResidual<SolveReal>(residual, solutionA, rhsA, expandedDomainCellLabels, dx, &dummyWeights);
 		
 		UT_VoxelArray<StoreReal> coarseRhs;
 		coarseRhs.size(coarseGridSize[0], coarseGridSize[1], coarseGridSize[2]);
@@ -1291,7 +1323,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		// Copy to Eigen and direct solve
 		forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 		{
-		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
+			coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1309,7 +1342,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		// Copy solution back
 		forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 		{
-		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
+			coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1320,18 +1354,37 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		upsampleAndAdd<SolveReal>(solutionA, coarseSolution, expandedDomainCellLabels, coarseDomainLabels);
 
-		dampedJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, expandedDomainCellLabels, dummyWeights, dx);
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    expandedDomainCellLabels,
+							    boundaryCells,
+							    dx,
+							    &dummyWeights);
+
+		interiorJacobiPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    expandedDomainCellLabels,
+							    dx);
 	    }
 	    {
-		// Pre-smooth to get an initial guess
-		dampedJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, expandedDomainCellLabels, dummyWeights, dx);
+		interiorJacobiPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    expandedDomainCellLabels,
+							    dx);
+
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    expandedDomainCellLabels,
+							    boundaryCells,
+							    dx,
+							    &dummyWeights);
 
 		// Compute new residual
 		UT_VoxelArray<StoreReal> residual;
 		residual.size(expandedGridSize, expandedGridSize, expandedGridSize);
 		residual.constant(0);
 
-		computePoissonResidual<SolveReal>(residual, solutionB, rhsB, expandedDomainCellLabels, dummyWeights, dx);
+		computePoissonResidual<SolveReal>(residual, solutionB, rhsB, expandedDomainCellLabels, dx, &dummyWeights);
 		
 		UT_VoxelArray<StoreReal> coarseRhs;
 		coarseRhs.size(coarseGridSize[0], coarseGridSize[1], coarseGridSize[2]);
@@ -1344,7 +1397,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		// Copy to Eigen and direct solve
 		forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 		{
-		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
+			coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1362,7 +1416,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		// Copy solution back
 		forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 		{
-		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		    if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
+			coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
 			exint index = directSolverIndices(cell);
 			assert(index >= 0);
@@ -1373,7 +1428,17 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		upsampleAndAdd<SolveReal>(solutionB, coarseSolution, expandedDomainCellLabels, coarseDomainLabels);
 
-		dampedJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, expandedDomainCellLabels, dummyWeights, dx);
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    expandedDomainCellLabels,
+							    boundaryCells,
+							    dx,
+							    &dummyWeights);
+
+		interiorJacobiPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    expandedDomainCellLabels,
+							    dx);
 	    }
 
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
@@ -1383,15 +1448,14 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
-
 	{
 	    UT_VoxelArray<StoreReal> solutionA;
 	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
 	    solutionA.constant(0);
 
 	    {
-		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, 1, true);
-		mgSolver.setGradientWeights(dummyWeights);
+		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, false);
+		mgSolver.setBoundaryWeights(dummyWeights);
 
 		mgSolver.applyVCycle(solutionA, rhsA);
 		mgSolver.applyVCycle(solutionA, rhsA, true);
@@ -1404,8 +1468,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.constant(0);
 
 	    {
-		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, 1, true);
-		mgSolver.setGradientWeights(dummyWeights);
+		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, false);
+		mgSolver.setBoundaryWeights(dummyWeights);
 
 		mgSolver.applyVCycle(solutionB, rhsB);
 		mgSolver.applyVCycle(solutionB, rhsB, true);
@@ -1416,12 +1480,47 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
 	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
 
-	    std::cout << "  Test multigrid poisson solver symmetry. BMA: " << dotB << ". AMB: " << dotA << std::endl;
+	    std::cout << "  Test multigrid poisson solver symmetry with Jacobi smoothing. BMA: " << dotB << ". AMB: " << dotA << std::endl;
+
+	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
+	}
+    	{
+	    UT_VoxelArray<StoreReal> solutionA;
+	    solutionA.size(expandedGridSize, expandedGridSize, expandedGridSize);
+	    solutionA.constant(0);
+
+	    {
+		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, true);
+		mgSolver.setBoundaryWeights(dummyWeights);
+
+		mgSolver.applyVCycle(solutionA, rhsA);
+		mgSolver.applyVCycle(solutionA, rhsA, true);
+		mgSolver.applyVCycle(solutionA, rhsA, true);
+		mgSolver.applyVCycle(solutionA, rhsA, true);
+	    }
+
+	    UT_VoxelArray<StoreReal> solutionB;
+	    solutionB.size(expandedGridSize, expandedGridSize, expandedGridSize);
+	    solutionB.constant(0);
+
+	    {
+		HDK::GeometricMultigridPoissonSolver mgSolver(expandedDomainCellLabels, 4, dx, 2, 1, true);
+		mgSolver.setBoundaryWeights(dummyWeights);
+
+		mgSolver.applyVCycle(solutionB, rhsB);
+		mgSolver.applyVCycle(solutionB, rhsB, true);
+		mgSolver.applyVCycle(solutionB, rhsB, true);
+		mgSolver.applyVCycle(solutionB, rhsB, true);
+	    }
+
+	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, expandedDomainCellLabels);
+	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, expandedDomainCellLabels);
+
+	    std::cout << "  Test multigrid poisson solver symmetry with Gauss Seidel smoothing. BMA: " << dotB << ". AMB: " << dotA << std::endl;
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
     }
-
     if (getTestOneLevelVCycle())
     {
 	std::cout << "\n// Testing one level v-cycle" << std::endl;
@@ -1457,13 +1556,16 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		    if (!vit.atEnd())
 		    {
-			if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+			if (!vit.isTileConstant() ||
+			    vit.getValue() == CellLabels::INTERIOR_CELL ||
+			    vit.getValue() == CellLabels::BOUNDARY_CELL)
 			{
 			    vitt.setTile(vit);
 
 			    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 			    {
-				if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+				if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
+				    vitt.getValue() == CellLabels::BOUNDARY_CELL)
 				{
 				    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 
@@ -1500,7 +1602,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	std::cout << "  Build dummy gradient weights" << std::endl;
 
 	// Build dummy weights
-	UT_VoxelArray<StoreReal> dummyWeights[3];
+	std::array<UT_VoxelArray<StoreReal>, 3> dummyWeights;
 	for (int axis : {0,1,2})
 	{
 	    UT_Vector3I size(gridSize, gridSize, gridSize);
@@ -1539,7 +1641,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 				if (cell[axis] < 0 || cell[axis] >= domainCellLabels.getVoxelRes()[axis])
 				    continue;
-				if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+				if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+				    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 				    isInterior = true;
 				else if (domainCellLabels(cell) == CellLabels::EXTERIOR_CELL)
 				    isExterior = true;
@@ -1556,8 +1659,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	std::cout << "  Apply one level of v-cycle" << std::endl;
 
 	// Pre-build multigrid preconditioner
-	HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, 2 /* levels in v-cycle */, dx, 3 /* boundary width */);
-	mgSolver.setGradientWeights(dummyWeights);
+	HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, 2 /* levels in v-cycle */, dx, 3 /* boundary width */, 1, false);
+	mgSolver.setBoundaryWeights(dummyWeights);
 
 	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
 	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
@@ -1626,24 +1729,65 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			rhsGrid.setValue(sampleCell, deltaAmplitude);
 	}
 
-	// Apply smoother
-	const int maxSmootherIterations = getMaxSmootherIterations();
+	UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(domainCellLabels, 2);
 
 	using namespace HDK::GeometricMultigridOperators;
-    
+
+	// Uncompress tiles on the boundary
+	uncompressBoundaryTiles(solutionGrid, boundaryCells);
+
+	// Apply smoother
+	const int maxSmootherIterations = getMaxSmootherIterations();
+   
 	const bool useGaussSeidelSmoothing = getUseGaussSeidelSmoothing();
 
 	int iteration = 0;
+	fpreal64 solvetime = 0;
+	fpreal64 boundarysolvetime = 0;
+	fpreal64 count = 0;
 	for (; iteration < maxSmootherIterations; ++iteration)
 	{
 	    if (useGaussSeidelSmoothing)
 	    {
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, true /*smooth odd tiles*/, true /*smooth forwards*/);
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, false /*smooth even tiles*/, true /*smooth forwards*/);
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, false /*smooth even tiles*/, false /*smooth backwards*/);
-		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, true /*smooth odd tiles*/, false /*smooth backwards*/);
+		UT_StopWatch timer;
+		timer.start();
+
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, true /*smooth odd tiles*/, true /*smooth forwards*/);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, false /*smooth even tiles*/, true /*smooth forwards*/);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, false /*smooth even tiles*/, false /*smooth backwards*/);
+		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, true /*smooth odd tiles*/, false /*smooth backwards*/);
+		
+		solvetime += timer.stop();
+		++count;
+		timer.clear();
+		timer.start();
+
 	    }
-	    else dampedJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx);
+	    else
+	    {
+		UT_StopWatch timer;
+		timer.start();
+
+		interiorJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx);
+
+		solvetime += timer.stop();
+		++count;
+		timer.clear();
+		timer.start();
+	    }
+
+	    {
+		UT_StopWatch timer;
+		timer.start();
+
+		// Boundary smoothing
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, boundaryCells, dx);
+
+		boundarysolvetime += timer.stop();
+		timer.clear();
+		timer.start();
+	    }
+
 	    computePoissonResidual<SolveReal>(residualGrid, solutionGrid, rhsGrid, domainCellLabels, dx);
 
 	    fpreal infNormError = infNorm(residualGrid, domainCellLabels);
@@ -1653,6 +1797,9 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    std::cout << "L-infinity norm: " << infNormError << std::endl;
 	    std::cout << "L-2 norm: " << l2NormError << std::endl;
 	}
+
+	std::cout << "Interior smoother time: " << solvetime / count << std::endl;
+	std::cout << "Boundary smoother time: " << boundarysolvetime / count << std::endl;
     }
 
     return true;

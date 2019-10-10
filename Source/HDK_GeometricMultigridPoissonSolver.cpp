@@ -3,6 +3,8 @@
 #include <SIM/SIM_FieldUtils.h>
 #include <UT/UT_ParallelUtil.h>
 
+#include <UT/UT_StopWatch.h>
+
 #include "HDK_GeometricMultigridOperators.h"
 
 namespace HDK
@@ -10,76 +12,6 @@ namespace HDK
     //
     // Helper functions for multigrid
     //
-
-    template<typename GridType>
-    void
-    uncompressTiles(UT_VoxelArray<GridType> &grid,
-		    const UT_Array<bool> &isTileOccupiedList)
-    {
-	UT_Interrupt *boss = UTgetInterrupt();
-	UTparallelFor(UT_BlockedRange<exint>(0, isTileOccupiedList.size()), [&](const UT_BlockedRange<exint> &range)
-	{
-	    for (exint i = range.begin(); i != range.end(); ++i)
-	    {
-		if (!(i & 127))
-		{
-		    if (boss->opInterrupt())
-			return;
-		}
-
-		if (isTileOccupiedList[i])
-		    grid.getLinearTile(i)->uncompress();
-	    }
-	});
-    }
-
-    template<typename GridType>
-    void
-    uncompressBoundaryTiles(UT_VoxelArray<GridType> &grid,
-			    const UT_Array<UT_Vector3I> &boundaryCells)
-    {
-	// We need to uncompress tiles in solution grids that boundary cells sit on.
-	// This isn't immediately obvious because there will be a smoother pass over
-	// the entire solution domain before applying boundary smoothing.
-	// However, if the residual happens to be zero along the boundary, the tiles will
-	// not be expanded safely during the domain smoothing and could cause a seg fault
-	// when expanding during boundary smoothing.
-
-	UT_Interrupt *boss = UTgetInterrupt();
-
-	const int tileCount = grid.numTiles();
-	UT_Array<bool> isTileOccupiedList;
-	isTileOccupiedList.setSize(tileCount);
-	isTileOccupiedList.constant(false);
-
-	UTparallelForLightItems(UT_BlockedRange<exint>(0, boundaryCells.size()), [&](const UT_BlockedRange<exint> &range)
-	{
-	    if (boss->opInterrupt())
-		return;
-
-	    UT_Array<bool> localIsTileOccupiedList;
-	    localIsTileOccupiedList.setSize(tileCount);
-	    localIsTileOccupiedList.constant(false);
-
-	    for (exint cellIndex = range.begin(); cellIndex != range.end(); ++cellIndex)
-	    {
-		UT_Vector3I cell = boundaryCells[cellIndex];
-
-		int tileNumber = grid.indexToLinearTile(cell[0], cell[1], cell[2]);
-
-		if (!localIsTileOccupiedList[tileNumber])
-		    localIsTileOccupiedList[tileNumber] = true;
-	    }
-
-	    for (int tileNumber = 0; tileNumber < tileCount; ++tileNumber)
-	    {
-		if (localIsTileOccupiedList[tileNumber] && !isTileOccupiedList[tileNumber])
-		    isTileOccupiedList[tileNumber] = true;   
-	    }
-	});
-
-	uncompressTiles(grid, isTileOccupiedList);
-    }
 
     template<typename StoreReal>
     void
@@ -120,13 +52,16 @@ namespace HDK
 
 		if (!vit.atEnd())
 		{
-		    if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == CellLabels::INTERIOR_CELL ||
+			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
 			vitt.setTile(vit);
 
 			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+			    if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
+				vitt.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
 				UT_Vector3I cell = UT_Vector3I(vitt.x(), vitt.y(), vitt.z());
 				int tileNumber = expandedDestination.indexToLinearTile(cell[0], cell[1], cell[2]);
@@ -146,7 +81,12 @@ namespace HDK
 	{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&expandedCellLabels);
-	    UT_VoxelTileIterator<int> vitt;
+
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+	    destinationProbe.setArray(&expandedDestination);
+
+	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> sourceProbe;
+	    sourceProbe.setConstArray(&source);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -159,15 +99,16 @@ namespace HDK
 
 		if (!vit.atEnd())
 		{
-		    if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == CellLabels::INTERIOR_CELL ||
+			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			for (; !vit.atEnd(); vit.advance())
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+			    if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				vit.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
-				UT_Vector3I expandedCell(vitt.x(), vitt.y(), vitt.z());
+				UT_Vector3I expandedCell(vit.x(), vit.y(), vit.z());
 				assert(!expandedDestination.getLinearTile(expandedDestination.indexToLinearTile(expandedCell[0],
 														expandedCell[1],
 														expandedCell[2]))->isConstant());
@@ -179,7 +120,9 @@ namespace HDK
 					cell[1] < source.getVoxelRes()[1] &&
 					cell[2] < source.getVoxelRes()[2]);
 
-				expandedDestination.setValue(expandedCell, source(cell));
+				destinationProbe.setIndex(vit);
+				sourceProbe.setIndex(cell[0], cell[1], cell[2]);
+				destinationProbe.setValue(sourceProbe.getValue());
 			    }
 			}
 		    }
@@ -227,13 +170,16 @@ namespace HDK
 
 		if (!vit.atEnd())
 		{
-		    if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == CellLabels::INTERIOR_CELL ||
+			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
 			vitt.setTile(vit);
 
 			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+			    if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
+				vitt.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
 				UT_Vector3I expandedCell(vitt.x(), vitt.y(), vitt.z());
 				UT_Vector3I cell = expandedCell - expandedOffset;
@@ -260,7 +206,12 @@ namespace HDK
 	{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&expandedCellLabels);
-	    UT_VoxelTileIterator<int> vitt;
+
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+	    destinationProbe.setArray(&destination);
+
+	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> sourceProbe;
+	    sourceProbe.setConstArray(&expandedSource);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -273,15 +224,16 @@ namespace HDK
 
 		if (!vit.atEnd())
 		{
-		    if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == CellLabels::INTERIOR_CELL ||
+			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			for (; !vit.atEnd(); vit.advance())
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+			    if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				vit.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
-				UT_Vector3I expandedCell(vitt.x(), vitt.y(), vitt.z());
+				UT_Vector3I expandedCell(vit.x(), vit.y(), vit.z());
 				UT_Vector3I cell = expandedCell - expandedOffset;
 
 				assert(cell[0] >= 0 && cell[1] >= 0 && cell[2] >= 0 &&
@@ -293,7 +245,9 @@ namespace HDK
 												cell[1],
 												cell[2]))->isConstant());
 
-				destination.setValue(cell, expandedSource(expandedCell));
+				destinationProbe.setIndex(cell[0], cell[1], cell[2]);
+				sourceProbe.setIndex(vit);
+				destinationProbe.setValue(sourceProbe.getValue());
 			    }
 			}
 		    }
@@ -320,7 +274,9 @@ namespace HDK
 	{
 	    UT_VoxelArrayIterator<exint> vit;
 	    vit.setConstArray(&gridIndices);
-	    UT_VoxelTileIterator<exint> vitt;
+
+	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> gridVectorProbe;
+	    gridVectorProbe.setConstArray(&gridVector);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -335,19 +291,20 @@ namespace HDK
 		{
 		    if (!vit.isTileConstant())
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			for (; !vit.atEnd(); vit.advance())
 			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+			    exint index = vit.getValue();
 
-			    exint index = vitt.getValue();
 			    if (index >= 0)
 			    {
-				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL);
-				vector(index) = gridVector(cell);
+				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+					cellLabels(cell) == CellLabels::BOUNDARY_CELL);
+
+				gridVectorProbe.setIndex(vit);
+				vector(index) = gridVectorProbe.getValue();
 			    }
-			    else assert(cellLabels(cell) != CellLabels::INTERIOR_CELL);
+			    else assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+					    cellLabels(cell) == CellLabels::BOUNDARY_CELL));
 			}
 		    }
 		}
@@ -373,7 +330,9 @@ namespace HDK
 	{
 	    UT_VoxelArrayIterator<exint> vit;
 	    vit.setConstArray(&gridIndices);
-	    UT_VoxelTileIterator<exint> vitt;
+
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> gridVectorProbe;
+	    gridVectorProbe.setArray(&gridVector);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -388,39 +347,38 @@ namespace HDK
 		{
 		    if (!vit.isTileConstant())
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			for (; !vit.atEnd(); vit.advance())
 			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+			    exint index = vit.getValue();
 
-			    exint index = vitt.getValue();
 			    if (index >= 0)
 			    {
-				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL);
-				gridVector.setValue(cell, vector(index));
+				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+					cellLabels(cell) == CellLabels::BOUNDARY_CELL);
+
+				gridVectorProbe.setIndex(vit);
+				gridVectorProbe.setValue(vector(index));
 			    }
-			    else assert(cellLabels(cell) != CellLabels::INTERIOR_CELL);
+			    else assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+					    cellLabels(cell) == CellLabels::BOUNDARY_CELL));
 			}
 		    }
 		}
 	    }
 	});
-    }
 
+    }
 
     GeometricMultigridPoissonSolver::GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
 									const int mgLevels,
 									const SolveReal dx,
 									const int boundarySmootherWidth,
 									const int boundarySmootherIterations,
-									const int smootherIterations,
 									const bool useGaussSeidel)
-    : myDoApplyGradientWeights(false)
+    : myDoApplyBoundaryWeights(false)
     , myMGLevels(mgLevels)
     , myBoundarySmootherWidth(boundarySmootherWidth)
     , myBoundarySmootherIterations(boundarySmootherIterations)
-    , myTotalSmootherIterations(smootherIterations)
     , myUseGaussSeidel(useGaussSeidel)
     {
 	using namespace HDK::GeometricMultigridOperators;
@@ -428,6 +386,9 @@ namespace HDK
 
 	assert(myMGLevels > 0);
 	assert(dx > 0);
+
+	UT_StopWatch timer;
+	timer.start();
 
 	// Add the necessary exterior cells so that after coarsening to the top level
 	// there is still a single layer of exterior cells
@@ -512,7 +473,12 @@ namespace HDK
 	    {
 		UT_VoxelArrayIterator<int> vit;
 		vit.setConstArray(&initialDomainCellLabels);
-		UT_VoxelTileIterator<int> vitt;
+
+		UT_VoxelProbe<int, true /* read */, false /* no write */, false> initialDomainProbe;
+		initialDomainProbe.setConstArray(&initialDomainCellLabels);
+
+		UT_VoxelProbe<int, false /* no read */, true /* write */, false> localDomainProbe;
+		localDomainProbe.setArray(&myDomainCellLabels[0]);
 
 		for (int i = range.begin(); i != range.end(); ++i)
 		{
@@ -525,20 +491,22 @@ namespace HDK
 
 		    if (!vit.atEnd())
 		    {
-			if (!vit.isTileConstant() || vit.getValue() != CellLabels::EXTERIOR_CELL)
+			if (!vit.isTileConstant() ||
+			    vit.getValue() != CellLabels::EXTERIOR_CELL)
 			{
-			    vitt.setTile(vit);
-
-			    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			    for (; !vit.atEnd(); vit.advance())
 			    {
-				if (vitt.getValue() != CellLabels::EXTERIOR_CELL)
+				if (vit.getValue() != CellLabels::EXTERIOR_CELL)
 				{
-				    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+				    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 				    UT_Vector3I expandedCell = cell + myExteriorOffset;
 
 				    assert(!myDomainCellLabels[0].getLinearTile(myDomainCellLabels[0].indexToLinearTile(expandedCell[0], expandedCell[1], expandedCell[2]))->isConstant());
 
-				    myDomainCellLabels[0].setValue(expandedCell, initialDomainCellLabels(cell));
+				    initialDomainProbe.setIndex(vit);
+				    localDomainProbe.setIndex(expandedCell[0], expandedCell[1], expandedCell[2]);
+				    localDomainProbe.setValue(initialDomainProbe.getValue());
+
 				}
 			    }
 			}
@@ -549,17 +517,21 @@ namespace HDK
 	    myDomainCellLabels[0].collapseAllTiles();
 	}
 
-	auto checkInteriorCell = [&](const UT_VoxelArray<int> &testGrid) -> bool
+	auto time = timer.stop();
+	std::cout << "      Copy initial domain time: " << time << std::endl;
+	timer.clear();
+	timer.start();
+
+	auto checkSolvableCell = [&](const UT_VoxelArray<int> &testGrid) -> bool
 	{
-	    bool hasInteriorCell = false;
+	    bool hasSolvableCell = false;
 
 	    UTparallelForEachNumber(testGrid.numTiles(), [&](const UT_BlockedRange<int> &range)
 	    {
-		if (hasInteriorCell) return;
+		if (hasSolvableCell) return;
 
 		UT_VoxelArrayIterator<int> vit;
 		vit.setConstArray(&testGrid);
-		UT_VoxelTileIterator<int> vitt;
 
 		for (int i = range.begin(); i != range.end(); ++i)
 		{
@@ -574,37 +546,38 @@ namespace HDK
 		    {
 			if (!vit.isTileConstant())
 			{
-			    vitt.setTile(vit);
-
-			    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			    for (; !vit.atEnd(); vit.advance())
 			    {
-				if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+				if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				    vit.getValue() == CellLabels::BOUNDARY_CELL)
 				{
-				    hasInteriorCell = true;
+				    hasSolvableCell = true;
 				    return;
 				}
 			    }
 			}
-			else if (vit.getValue() == CellLabels::INTERIOR_CELL)
+			else if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				    vit.getValue() == CellLabels::BOUNDARY_CELL)
 			{
-			    hasInteriorCell = true;
+			    hasSolvableCell = true;
 			    return;
 			}
 		    }
 		}
 	    });
 
-	    return hasInteriorCell;
+	    return hasSolvableCell;
 	};	    
 
-	assert(checkInteriorCell(myDomainCellLabels[0]));
+	assert(checkSolvableCell(myDomainCellLabels[0]));
+	assert(unitTestBoundaryCells(myDomainCellLabels[0]));
 
 	// Precompute the coarsening strategy. Cap level if there are no longer interior cells
 	for (int level = 1; level < myMGLevels; ++level)
 	{
 	    myDomainCellLabels[level] = buildCoarseCellLabels(myDomainCellLabels[level - 1]);
 
-	    if (!checkInteriorCell(myDomainCellLabels[level]))
+	    if (!checkSolvableCell(myDomainCellLabels[level]))
 	    {
 		myMGLevels = level - 1;
 		myDomainCellLabels.setSize(myMGLevels);
@@ -612,7 +585,13 @@ namespace HDK
 	    }
 
 	    assert(unitTestCoarsening(myDomainCellLabels[level], myDomainCellLabels[level - 1]));
+	    assert(unitTestBoundaryCells(myDomainCellLabels[level]));
 	}
+
+	time = timer.stop();
+	std::cout << "      Build coarse cell time: " << time << std::endl;
+	timer.clear();
+	timer.start();
 
 	myDx.setSize(myMGLevels);
 	myDx[0] = dx;
@@ -643,6 +622,11 @@ namespace HDK
 	for (int level = 0; level < myMGLevels; ++level)
 	    myBoundaryCells[level] = buildBoundaryCells(myDomainCellLabels[level], myBoundarySmootherWidth);
 
+	time = timer.stop();
+	std::cout << "      Build boundary cells time: " << time << std::endl;
+	timer.clear();
+	timer.start();
+
 	// Pre-build matrix at the coarsest level
 	{
 	    exint interiorCellCount = 0;
@@ -663,12 +647,15 @@ namespace HDK
 		    if (boss->opInterrupt())
 			break;
 
-		    if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == CellLabels::INTERIOR_CELL ||
+			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
 			vitt.setTile(vit);
 			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL)
+			    if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
+				vitt.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
 				UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 				myDirectSolverIndices.setValue(cell, interiorCellCount++);
@@ -699,12 +686,15 @@ namespace HDK
 		    if (boss->opInterrupt())
 			break;
 
-		    if (!vit.isTileConstant() || vit.getValue() == INTERIOR_CELL)
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == INTERIOR_CELL ||
+			vit.getValue() == BOUNDARY_CELL)
 		    {
 			vitt.setTile(vit);
 			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 			{
-			    if (vitt.getValue() == INTERIOR_CELL)
+			    if (vitt.getValue() == INTERIOR_CELL ||
+				vitt.getValue() == BOUNDARY_CELL)
 			    {
 				UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 
@@ -718,7 +708,8 @@ namespace HDK
 					UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
 					auto adjacentCellLabel = myDomainCellLabels[myMGLevels - 1](adjacentCell);
-					if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
+					if (adjacentCellLabel == CellLabels::INTERIOR_CELL ||
+					    adjacentCellLabel == CellLabels::BOUNDARY_CELL)
 					{
 					    exint adjacentIndex = myDirectSolverIndices(adjacentCell);
 					    assert(adjacentIndex >= 0);
@@ -763,12 +754,18 @@ namespace HDK
 
 	    myCoarseRHSVector = Vector::Zero(interiorCellCount);
 	}
+
+	time = timer.stop();
+	std::cout << "      Build coarse direct solver time: " << time << std::endl;
+	timer.clear();
+	timer.start();
     }
 
+    // TODO: Optimize this to only copy at faces between boundary and exterior or dirichlet cells
     void
-    GeometricMultigridPoissonSolver::setGradientWeights(const UT_VoxelArray<StoreReal> (&gradientWeights)[3])
+    GeometricMultigridPoissonSolver::setBoundaryWeights(const std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights)
     {
-	myDoApplyGradientWeights = true;
+	myDoApplyBoundaryWeights = true;
 
 	UT_Vector3I baseVoxelRes = myDomainCellLabels[0].getVoxelRes();
 	for (int axis : {0,1,2})
@@ -776,14 +773,14 @@ namespace HDK
 	    UT_Vector3I localVoxelRes = baseVoxelRes;
 	    ++localVoxelRes[axis];
 
-	    myFineGradientWeights[axis].size(localVoxelRes[0], localVoxelRes[1], localVoxelRes[2]);
+	    myFineBoundaryWeights[axis].size(localVoxelRes[0], localVoxelRes[1], localVoxelRes[2]);
 
 	    UT_Interrupt *boss = UTgetInterrupt();
 
-	    UTparallelForEachNumber(myFineGradientWeights[axis].numTiles(), [&](const UT_BlockedRange<int> &range)
+	    UTparallelForEachNumber(myFineBoundaryWeights[axis].numTiles(), [&](const UT_BlockedRange<int> &range)
 	    {
 		UT_VoxelArrayIterator<StoreReal> vit;
-		vit.setConstArray(&myFineGradientWeights[axis]);
+		vit.setConstArray(&myFineBoundaryWeights[axis]);
 		UT_VoxelTileIterator<StoreReal> vitt;
 
 		for (int i = range.begin(); i != range.end(); ++i)
@@ -807,12 +804,12 @@ namespace HDK
 
 			    // It's possible to step outside of the bounds of the provided gradient weights
 			    if (face[0] < 0 || face[1] < 0 || face[2] < 0 ||
-				face[0] >= gradientWeights[axis].getVoxelRes()[0] ||
-				face[1] >= gradientWeights[axis].getVoxelRes()[1] ||
-				face[2] >= gradientWeights[axis].getVoxelRes()[2])
+				face[0] >= boundaryWeights[axis].getVoxelRes()[0] ||
+				face[1] >= boundaryWeights[axis].getVoxelRes()[1] ||
+				face[2] >= boundaryWeights[axis].getVoxelRes()[2])
 				continue;
 
-			    vitt.setValue(gradientWeights[axis](face));
+			    vitt.setValue(boundaryWeights[axis](face));
 			}
 		    }
 		}
@@ -837,293 +834,332 @@ namespace HDK
 
 	assert(solution.getVoxelRes() == rhs.getVoxelRes());
 
-	mySolutionGrids[0].constant(0);
-	uncompressBoundaryTiles(mySolutionGrids[0], myBoundaryCells[0]);
-
-	myRHSGrids[0].constant(0);
-
-	// If there is an initial guess in the solution vector, copy it locally
-	if (useInitialGuess)
 	{
-	    copyToExpandedGrid(mySolutionGrids[0],
-				solution,
+	    UT_StopWatch precookTimer;
+	    precookTimer.start();
+
+	    mySolutionGrids[0].constant(0);
+	    uncompressBoundaryTiles(mySolutionGrids[0], myBoundaryCells[0]);
+
+	    myRHSGrids[0].constant(0);
+
+	    // If there is an initial guess in the solution vector, copy it locally
+	    if (useInitialGuess)
+	    {
+		copyToExpandedGrid(mySolutionGrids[0],
+				    solution,
+				    myDomainCellLabels[0],
+				    myExteriorOffset);
+	    }
+
+	    // Copy RHS to internal expanded grid
+	    copyToExpandedGrid(myRHSGrids[0],
+				rhs,
 				myDomainCellLabels[0],
 				myExteriorOffset);
-	}
 
-	// Copy RHS to internal expanded grid
-	copyToExpandedGrid(myRHSGrids[0],
-			    rhs,
-			    myDomainCellLabels[0],
-			    myExteriorOffset);
+	    auto time = precookTimer.stop();
+	    std::cout << "      V-cycle pre-cook time: " << time << std::endl;
+	}
 
 	// Down-stroke of the v-cycle
 	for (int level = 0; level < myMGLevels - 1; ++level)
 	{
-	    // TODO: optimize using method from McAdams et al. 2010 that skips the down-stroke smoothing when using a zero initial guess
 
-	    // Apply smoother
-	    for (int smoothIteration = 0; smoothIteration < myTotalSmootherIterations; ++smoothIteration)
+	    std::cout << "    Downstroke Smoother level: " << level << std::endl;
+	    
 	    {
-		if (level == 0 && myDoApplyGradientWeights)
+		UT_StopWatch boundarySmoothTimer;
+		boundarySmoothTimer.start();
+
+		// Smooth along boundaries
+		for (int boundaryIteration = 0; boundaryIteration < myBoundarySmootherIterations; ++boundaryIteration)
 		{
-		    if (myUseGaussSeidel)
+		    if (level == 0 && myDoApplyBoundaryWeights)
 		    {
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								    myRHSGrids[level],
 								    myDomainCellLabels[level],
-								    myFineGradientWeights,
+								    myBoundaryCells[level],
 								    myDx[level],
-								    true /*smooth odd tiles*/, true /*smooth forwards*/);
-
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-							    myRHSGrids[level],
-							    myDomainCellLabels[level],
-							    myFineGradientWeights,
-							    myDx[level],
-							    false /*smooth even tiles*/, true /*smooth forwards*/);
-
-			// tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myFineGradientWeights,
-			// 				myDx[level],
-			// 				true /*smooth odd tiles*/, false /*smooth backwards*/);
-
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myFineGradientWeights,
-			// 				myDx[level],
-			// 				false /*smooth even tiles*/, false /*smooth backwards*/);
+								    &myFineBoundaryWeights);
 		    }
 		    else
 		    {
-			// TODO: use tiled RB gauss seidel
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myFineGradientWeights,
-								myDx[level]);
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								    myRHSGrids[level],
+								    myDomainCellLabels[level],
+								    myBoundaryCells[level],
+								    myDx[level]);
 		    }
+		}
 
-		    // Smooth along boundaries
-		    for (int boundaryIteration = 0; boundaryIteration < 2 * myBoundarySmootherIterations; ++boundaryIteration)
-		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myFineGradientWeights,
-								myDx[level]);
-		    }
+		auto time = boundarySmoothTimer.stop();
+		std::cout << "      Boundary smoother time: " << time << std::endl;
+	    }
+
+
+	    {
+		UT_StopWatch smoothTimer;
+		smoothTimer.start();
+
+		// Apply smoother
+		if (myUseGaussSeidel)
+		{
+		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+									myRHSGrids[level],
+									myDomainCellLabels[level],
+									myDx[level],
+									true /*smooth odd tiles*/, true /*smooth forwards*/);
+
+		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+									myRHSGrids[level],
+									myDomainCellLabels[level],
+									myDx[level],
+									false /*smooth even tiles*/, true /*smooth forwards*/);
 		}
 		else
 		{
-		    if (myUseGaussSeidel)
+		    interiorJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								myRHSGrids[level],
+								myDomainCellLabels[level],
+								myDx[level]);
+		}
+
+		auto time = smoothTimer.stop();
+		std::cout << "      Smoother time: " << time << std::endl;
+	    }
+
+	    {
+		UT_StopWatch boundarySmoothTimer;
+		boundarySmoothTimer.start();
+
+		// Smooth along boundaries
+		for (int boundaryIteration = 0; boundaryIteration < myBoundarySmootherIterations; ++boundaryIteration)
+		{
+		    if (level == 0 && myDoApplyBoundaryWeights)
 		    {
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								    myRHSGrids[level],
 								    myDomainCellLabels[level],
+								    myBoundaryCells[level],
 								    myDx[level],
-								    true /*smooth odd tiles*/, true /*smooth forwards*/);
-
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								    myRHSGrids[level],
-								    myDomainCellLabels[level],
-								    myDx[level],
-								    false /*smooth even tiles*/, true /*smooth forwards*/);
-
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myDx[level],
-			// 				true /*smooth odd tiles*/, false /*smooth backwards*/);
-
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myDx[level],
-			// 				false /*smooth even tiles*/, false /*smooth backwards*/);
+								    &myFineBoundaryWeights);
 		    }
 		    else
 		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myDx[level]);
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								    myRHSGrids[level],
+								    myDomainCellLabels[level],
+								    myBoundaryCells[level],
+								    myDx[level]);
 		    }
+		}
 
-		    for (int boundaryIteration = 0; boundaryIteration < 2 * (level + 1) * myBoundarySmootherIterations; ++boundaryIteration)
-		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myDx[level]);
-		    }
-    		}
+		auto time = boundarySmoothTimer.stop();
+		std::cout << "      Boundary smoother time: " << time << std::endl;
 	    }
 
-	    // Compute residual to restrict to the next level
-	    if (level == 0 && myDoApplyGradientWeights)
 	    {
-		computePoissonResidual<SolveReal>(myResidualGrids[level],
-						    mySolutionGrids[level],
-						    myRHSGrids[level],
-						    myDomainCellLabels[level],
-						    myFineGradientWeights,
-						    myDx[level]);
+		UT_StopWatch computeResidualTimer;
+		computeResidualTimer.start();
+
+		// Compute residual to restrict to the next level
+		if (level == 0 && myDoApplyBoundaryWeights)
+		{
+		    computePoissonResidual<SolveReal>(myResidualGrids[level],
+							mySolutionGrids[level],
+							myRHSGrids[level],
+							myDomainCellLabels[level],
+							myDx[level],
+							&myFineBoundaryWeights);
+		}
+		else
+		{
+		    computePoissonResidual<SolveReal>(myResidualGrids[level],
+							mySolutionGrids[level],
+							myRHSGrids[level],
+							myDomainCellLabels[level],
+							myDx[level]);
+		}
+
+		auto time = computeResidualTimer.stop();
+		std::cout << "      Compute residual time: " << time << std::endl;
 	    }
-	    else
+
+
 	    {
-		computePoissonResidual<SolveReal>(myResidualGrids[level],
-						    mySolutionGrids[level],
-						    myRHSGrids[level],
-						    myDomainCellLabels[level],
-						    myDx[level]);
+		UT_StopWatch restrictionTimer;
+		restrictionTimer.start();
+
+		downsample<SolveReal>(myRHSGrids[level + 1],
+					myResidualGrids[level],
+					myDomainCellLabels[level + 1],
+					myDomainCellLabels[level]);
+
+		auto time = restrictionTimer.stop();
+		std::cout << "      Restriction time: " << time << std::endl;
 	    }
 
-	    downsample<SolveReal>(myRHSGrids[level + 1],
-				    myResidualGrids[level],
-				    myDomainCellLabels[level + 1],
-				    myDomainCellLabels[level]);
 
-	    mySolutionGrids[level + 1].constant(0);
+	    {
+		UT_StopWatch cleanUpTimer;
+		cleanUpTimer.start();
 
-	    // Expand tiles at boundaries
-	    if (level < myMGLevels - 1)
-		uncompressBoundaryTiles(mySolutionGrids[level + 1], myBoundaryCells[level + 1]);
+		mySolutionGrids[level + 1].constant(0);
+
+		// Expand tiles at boundaries
+		if (level < myMGLevels - 1)
+		    uncompressBoundaryTiles(mySolutionGrids[level + 1], myBoundaryCells[level + 1]);
+
+
+		auto time = cleanUpTimer.stop();
+		std::cout << "      Clean up time: " << time << std::endl;
+	    }
 	}
 
-	copyGridToVector(myCoarseRHSVector,
-			    myRHSGrids[myMGLevels - 1],
-			    myDirectSolverIndices,
-			    myDomainCellLabels[myMGLevels - 1]);
+	{
+	    UT_StopWatch directSolveTimer;
+	    directSolveTimer.start();
 
-	Vector directSolution = myCoarseSolver.solve(myCoarseRHSVector);
+	    copyGridToVector(myCoarseRHSVector,
+				myRHSGrids[myMGLevels - 1],
+				myDirectSolverIndices,
+				myDomainCellLabels[myMGLevels - 1]);
 
-	copyVectorToGrid(mySolutionGrids[myMGLevels - 1],
-			    directSolution,
-			    myDirectSolverIndices,
-			    myDomainCellLabels[myMGLevels - 1]);
+	    Vector directSolution = myCoarseSolver.solve(myCoarseRHSVector);
+
+	    copyVectorToGrid(mySolutionGrids[myMGLevels - 1],
+				directSolution,
+				myDirectSolverIndices,
+				myDomainCellLabels[myMGLevels - 1]);
+
+	    auto time = directSolveTimer.stop();
+	    std::cout << "      Direct solve time: " << time << std::endl;
+	}
 
 	// Up-stroke of the v-cycle
 	for (int level = myMGLevels - 2; level >= 0; --level)
 	{
-	    upsampleAndAdd<SolveReal>(mySolutionGrids[level],
-					mySolutionGrids[level + 1],
-					myDomainCellLabels[level],
-					myDomainCellLabels[level + 1]);
-
-	    // Apply smoother
-	    for (int smoothIteration = 0; smoothIteration < myTotalSmootherIterations; ++smoothIteration)
+	    std::cout << "    Upstroke Smoother level: " << level << std::endl;
 	    {
-		if (level == 0 && myDoApplyGradientWeights)
+		UT_StopWatch prolongationTimer;
+		prolongationTimer.start();
+		
+		upsampleAndAdd<SolveReal>(mySolutionGrids[level],
+					    mySolutionGrids[level + 1],
+					    myDomainCellLabels[level],
+					    myDomainCellLabels[level + 1]);
+
+		auto time = prolongationTimer.stop();
+		std::cout << "      Prolongation time: " << time << std::endl;
+	    }
+
+	    {
+		UT_StopWatch boundarySmoothTimer;
+		boundarySmoothTimer.start();
+
+		// Smooth along boundaries
+		for (int boundaryIteration = 0; boundaryIteration < myBoundarySmootherIterations; ++boundaryIteration)
 		{
-		    // Smooth along boundaries
-		    for (int boundaryIteration = 0; boundaryIteration < 2 * myBoundarySmootherIterations; ++boundaryIteration)
+		    if (level == 0 && myDoApplyBoundaryWeights)
 		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myFineGradientWeights,
-								myDx[level]);
-		    }
-
-		    if (myUseGaussSeidel)
-		    {
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myFineGradientWeights,
-			// 				myDx[level],
-			// 				false /*smooth even tiles*/, true /*smooth forwards*/);
-
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myFineGradientWeights,
-			// 				myDx[level],
-			// 				true /*smooth odd tiles*/, true /*smooth forwards*/);
-
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								    myRHSGrids[level],
 								    myDomainCellLabels[level],
-								    myFineGradientWeights,
+								    myBoundaryCells[level],
 								    myDx[level],
-								    false /*smooth even tiles*/, false /*smooth backwards*/);
-
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								    myRHSGrids[level],
-								    myDomainCellLabels[level],
-								    myFineGradientWeights,
-								    myDx[level],
-								    true /*smooth odd tiles*/, false /*smooth backwards*/);
+								    &myFineBoundaryWeights);
 		    }
 		    else
 		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myFineGradientWeights,
-								myDx[level]);
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								    myRHSGrids[level],
+								    myDomainCellLabels[level],
+								    myBoundaryCells[level],
+								    myDx[level]);
 		    }
+		}
+
+		auto time = boundarySmoothTimer.stop();
+		std::cout << "      Boundary smoother time: " << time << std::endl;
+	    }
+
+	    {
+		UT_StopWatch smoothTimer;
+		smoothTimer.start();
+
+		// Smooth interior
+		if (myUseGaussSeidel)
+		{
+		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+									myRHSGrids[level],
+									myDomainCellLabels[level],
+									myDx[level],
+									false /*smooth even tiles*/, false /*smooth backwards*/);
+
+		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+									myRHSGrids[level],
+									myDomainCellLabels[level],
+									myDx[level],
+									true /*smooth odd tiles*/, false /*smooth backwards*/);
 		}
 		else
 		{
-		    for (int boundaryIteration = 0; boundaryIteration < 2 * (level + 1) * myBoundarySmootherIterations; ++boundaryIteration)
-		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myDx[level]);
-		    }
-
-		    if (myUseGaussSeidel)
-		    {
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myDx[level],
-			// 				false /*smooth even tiles*/, true /*smooth forwards*/);
-
-			// tiledGaussSeidelPoissonSmoother(mySolutionGrids[level],
-			// 				myRHSGrids[level],
-			// 				myDomainCellLabels[level],
-			// 				myDx[level],
-			// 				true /*smooth odd tiles*/, true /*smooth forwards*/);
-
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+		    interiorJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								    myRHSGrids[level],
 								    myDomainCellLabels[level],
-								    myDx[level],
-								    false /*smooth even tiles*/, false /*smooth backwards*/);
+								    myDx[level]);
+		}
 
-			tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+		auto time = smoothTimer.stop();
+		std::cout << "      Smoother time: " << time << std::endl;
+	    }
+	    {
+		UT_StopWatch boundarySmoothTimer;
+		boundarySmoothTimer.start();
+
+		// Smooth along boundaries
+		for (int boundaryIteration = 0; boundaryIteration < myBoundarySmootherIterations; ++boundaryIteration)
+		{
+		    if (level == 0 && myDoApplyBoundaryWeights)
+		    {
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								    myRHSGrids[level],
 								    myDomainCellLabels[level],
+								    myBoundaryCells[level],
 								    myDx[level],
-								    true /*smooth odd tiles*/, false /*smooth backwards*/);
+								    &myFineBoundaryWeights);
 		    }
 		    else
 		    {
-			dampedJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myDx[level]);
+			boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								    myRHSGrids[level],
+								    myDomainCellLabels[level],
+								    myBoundaryCells[level],
+								    myDx[level]);
 		    }
 		}
+
+		auto time = boundarySmoothTimer.stop();
+		std::cout << "      Boundary smoother time: " << time << std::endl;
 	    }
+	    
 	}
 
-	// Copy local solution vector with expanded exterior band to 
-	// an interior solution that matches the supplied RHS vector grid.
-	copyFromExpandedGrid(solution,
-				mySolutionGrids[0],
-				myDomainCellLabels[0],
-				myExteriorOffset);
+	{
+	    UT_StopWatch copySmootherTimer;
+	    copySmootherTimer.start();
+
+	    // Copy local solution vector with expanded exterior band to 
+	    // an interior solution that matches the supplied RHS vector grid.
+	    copyFromExpandedGrid(solution,
+				    mySolutionGrids[0],
+				    myDomainCellLabels[0],
+				    myExteriorOffset);
+
+	    auto time = copySmootherTimer.stop();
+	    std::cout << "      Copy solution time: " << time << std::endl;
+	}
     }
 }
