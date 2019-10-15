@@ -50,7 +50,7 @@ namespace HDK::GeometricMultigridOperators {
 		for (int yOffset : {0,1})
 		    fineCellProbe[yOffset][zOffset].setConstArray(&sourceCellLabels, 0, 1);
 
-	    UT_VoxelProbe<int, false /* no read */, true /* write */, false> destinationCellLabelProbe;
+	    UT_VoxelProbe<int, false /* no read */, true /* write */, true /* test for write */> destinationCellLabelProbe;
 	    destinationCellLabelProbe.setArray(&destinationCellLabels);
 
 	    for (int i = range.begin(); i != range.end(); ++i)

@@ -82,7 +82,7 @@ namespace HDK
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&expandedCellLabels);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&expandedDestination);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> sourceProbe;
@@ -207,7 +207,7 @@ namespace HDK
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&expandedCellLabels);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> sourceProbe;
@@ -331,7 +331,7 @@ namespace HDK
 	    UT_VoxelArrayIterator<exint> vit;
 	    vit.setConstArray(&gridIndices);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> gridVectorProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> gridVectorProbe;
 	    gridVectorProbe.setArray(&gridVector);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
@@ -477,7 +477,7 @@ namespace HDK
 		UT_VoxelProbe<int, true /* read */, false /* no write */, false> initialDomainProbe;
 		initialDomainProbe.setConstArray(&initialDomainCellLabels);
 
-		UT_VoxelProbe<int, false /* no read */, true /* write */, false> localDomainProbe;
+		UT_VoxelProbe<int, false /* no read */, true /* write */, true /* test for write */> localDomainProbe;
 		localDomainProbe.setArray(&myDomainCellLabels[0]);
 
 		for (int i = range.begin(); i != range.end(); ++i)

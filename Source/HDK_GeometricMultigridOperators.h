@@ -158,7 +158,7 @@ namespace HDK::GeometricMultigridOperators{
 	    UT_VoxelProbeCube<StoreReal> tempSolutionProbe;
 	    tempSolutionProbe.setPlusArray(&tempSolution);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> solutionProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> solutionProbe;
 	    solutionProbe.setArray(&solution);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> rhsProbe;
@@ -228,7 +228,7 @@ namespace HDK::GeometricMultigridOperators{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, true /* read */, true /* write */, false> solutionProbes[3][3];
+	    UT_VoxelProbe<StoreReal, true /* read */, true /* write */, true /* test for writes */> solutionProbes[3][3];
 
 	    // Set off-center probes
 	    for (int zOffset : {0,2})
@@ -240,7 +240,7 @@ namespace HDK::GeometricMultigridOperators{
 	    // Set center probes
 	    solutionProbes[1][1].setArray(&solution, -1, 1);
 
-	    UT_VoxelProbe<int, true /* read */, false /* no write */, false > cellLabelProbe;
+	    UT_VoxelProbe<int, true /* read */, false /* no write */, false> cellLabelProbe;
 	    cellLabelProbe.setConstArray(&cellLabels);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> rhsProbe;
@@ -492,7 +492,7 @@ namespace HDK::GeometricMultigridOperators{
 	    if (boss->opInterrupt())
 		return;
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> solutionProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> solutionProbe;
 	    solutionProbe.setArray(&solution);
 
 	    for (exint cellIndex = range.begin(); cellIndex != range.end(); ++cellIndex)
@@ -550,7 +550,7 @@ namespace HDK::GeometricMultigridOperators{
 	    UT_VoxelProbeCube<int> cellLabelProbe;
 	    cellLabelProbe.setPlusArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
@@ -699,7 +699,7 @@ namespace HDK::GeometricMultigridOperators{
 	    UT_VoxelProbeCube<int> cellLabelProbe;
 	    cellLabelProbe.setPlusArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> residualProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> residualProbe;
 	    residualProbe.setArray(&residual);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> rhsProbe;
@@ -842,7 +842,7 @@ namespace HDK::GeometricMultigridOperators{
 		for (int yOffset = 0; yOffset < 4; ++yOffset)
 		    sourceProbes[yOffset][zOffset].setConstArray(&source, 0, 3);
 
-	    UT_VoxelProbe<StoreReal, false /* read */, true /* no write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
 	    UT_VoxelProbe<int, true /* read */, false /* no write */, false> destinationCellLabelProbe;
@@ -981,7 +981,7 @@ namespace HDK::GeometricMultigridOperators{
 		for (int yDirection : {0,1})
 		    sourceProbes[yDirection][zDirection].setConstArray(&source, 0, 1);
 
-	    UT_VoxelProbe<StoreReal, true /* read */, true /* no write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, true /* read */, true /* no write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
 	    UT_VoxelProbe<int, true /* read */, false /* no write */, false> destinationCellLabelProbe;
@@ -1135,7 +1135,7 @@ namespace HDK::GeometricMultigridOperators{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, true /* no read */, true /* write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, true /* read */, true /* write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> sourceProbe;
@@ -1189,7 +1189,7 @@ namespace HDK::GeometricMultigridOperators{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> sourceProbe;

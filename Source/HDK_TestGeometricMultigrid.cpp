@@ -583,7 +583,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			UT_VoxelArrayIterator<int> vit;
 			vit.setConstArray(&domainCellLabels);
 
-			UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, false> destinationProbe;
+			UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> destinationProbe;
 			destinationProbe.setArray(&destination);
 
 			UT_VoxelProbe<StoreReal, true /* read */, false /* write */, false> sourceProbe;
