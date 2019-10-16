@@ -297,14 +297,22 @@ namespace HDK
 
 			    if (index >= 0)
 			    {
+#if !defined(NDEBUG)
+				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
 					cellLabels(cell) == CellLabels::BOUNDARY_CELL);
-
+#endif
 				gridVectorProbe.setIndex(vit);
 				vector(index) = gridVectorProbe.getValue();
 			    }
-			    else assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
-					    cellLabels(cell) == CellLabels::BOUNDARY_CELL));
+#if !defined(NDEBUG)
+			    else
+			    {
+				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+				assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+					cellLabels(cell) == CellLabels::BOUNDARY_CELL));
+			    }
+#endif
 			}
 		    }
 		}
@@ -353,14 +361,22 @@ namespace HDK
 
 			    if (index >= 0)
 			    {
+#if !defined(NDEBUG)
+				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
 					cellLabels(cell) == CellLabels::BOUNDARY_CELL);
-
+#endif				
 				gridVectorProbe.setIndex(vit);
 				gridVectorProbe.setValue(vector(index));
 			    }
-			    else assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
-					    cellLabels(cell) == CellLabels::BOUNDARY_CELL));
+#if !defined(NDEBUG)
+			    else
+			    {
+				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+				assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+					cellLabels(cell) == CellLabels::BOUNDARY_CELL));
+			    }
+#endif
 			}
 		    }
 		}

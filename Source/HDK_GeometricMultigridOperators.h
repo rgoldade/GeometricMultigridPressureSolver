@@ -1125,8 +1125,7 @@ namespace HDK::GeometricMultigridOperators{
 		const UT_VoxelArray<int> &cellLabels)
     {
 	assert(destination.getVoxelRes() == source.getVoxelRes() &&
-		source.getVoxelRes() == scaledSource.getVoxelRes() &&
-		scaledSource.getVoxelRes() == cellLabels.getVoxelRes());
+		source.getVoxelRes() == cellLabels.getVoxelRes());
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
