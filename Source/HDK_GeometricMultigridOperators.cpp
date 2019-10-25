@@ -111,7 +111,7 @@ namespace HDK::GeometricMultigridOperators {
 	    vit.setArray(&destinationCellLabels);
 
 	    UT_VoxelProbeCube<int> readCellLabelProbe;
-	    readCellLabelProbe.setPlusArray(&destinationCellLabels);
+	    readCellLabelProbe.setConstPlusArray(&destinationCellLabels);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
@@ -687,5 +687,37 @@ namespace HDK::GeometricMultigridOperators {
 	});
 
 	return boundaryCellTestPassed;
-    } 
+    }
+
+    bool
+    unitTestExteriorCells(const UT_VoxelArray<int> &cellLabels)
+    {
+	const UT_Vector3I voxelRes = cellLabels.getVoxelRes();
+
+	UT_Vector3I startCell(0,0,0);
+	UT_Vector3I endCell = voxelRes;
+
+	bool exteriorCellTestPassed = true;
+	for (int axis : {0,1,2})
+	    for (int direction : {0,1})
+	    {
+		UT_Vector3I localStartCell = startCell;
+		UT_Vector3I localEndCell = endCell;
+
+		if (direction == 0)
+		    localEndCell[axis] = 1;
+		else
+		    localStartCell[axis] = endCell[axis] - 1;
+
+		forEachVoxelRange(localStartCell, localEndCell, [&](const UT_Vector3I &cell)
+		{
+		    if (!exteriorCellTestPassed) return;
+
+		    if (cellLabels(cell) != CellLabels::EXTERIOR_CELL)
+			exteriorCellTestPassed = false;
+		});
+	    }
+
+	return exteriorCellTestPassed;
+    }
 } //namespace HDK::GeometricMultigridOperators

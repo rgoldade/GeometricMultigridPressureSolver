@@ -11,24 +11,22 @@ namespace HDK
     {
 	static constexpr int UNLABELLED_CELL = -1;
 
-	using StoreReal = float;
+	using StoreReal = double;
 	using SolveReal = double;
 	using Vector = std::conditional<std::is_same<SolveReal, float>::value, Eigen::VectorXf, Eigen::VectorXd>::type;
 
     public:
 
 	GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
+					const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights,
 					const int mgLevels,
 					const SolveReal dx,
-					const int boundarySmootherWidth,
-					const int boundarySmootherIterations,
 					const bool useGaussSeidel);
 
-	void setBoundaryWeights(const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights);
-
-	void applyVCycle(UT_VoxelArray<StoreReal> &solutionVector,
-			    const UT_VoxelArray<StoreReal> &rhsVector,
-			    const bool useInitialGuess = false);
+	void
+	applyVCycle(UT_VoxelArray<StoreReal> &solutionVector,
+		    const UT_VoxelArray<StoreReal> &rhsVector,
+		    const bool useInitialGuess = false);
 
     private:
 
@@ -37,12 +35,8 @@ namespace HDK
 
 	UT_Array<UT_Array<UT_Vector3I>> myBoundaryCells;
 
-	UT_VoxelArray<exint> myDirectSolverIndices;
-
 	int myMGLevels;
-	UT_Vector3I myExteriorOffset;
 
-	bool myDoApplyBoundaryWeights;
 	std::array<UT_VoxelArray<StoreReal>, 3> myFineBoundaryWeights;
 
 	UT_Array<SolveReal> myDx;
@@ -52,6 +46,7 @@ namespace HDK
 
 	const bool myUseGaussSeidel;
 
+	UT_VoxelArray<exint> myDirectSolverIndices;
 	Vector myCoarseRHSVector;
 	Eigen::SparseMatrix<SolveReal> sparseMatrix;
 	Eigen::SimplicialCholesky<Eigen::SparseMatrix<SolveReal>> myCoarseSolver;

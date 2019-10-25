@@ -17,12 +17,12 @@ namespace HDK
 		typename StoreReal>
     void solveGeometricConjugateGradient(UT_VoxelArray<StoreReal> &solutionGrid,
 					    const UT_VoxelArray<StoreReal> &rhsGrid,
-					    MatrixVectorMultiplyFunctor &matrixVectorMultiplyFunctor,
-					    PreconditionerFunctor &preconditionerFunctor,
-					    DotProductFunctor &dotProductFunctor,
-					    SquaredL2NormFunctor &squaredNormFunctor,
-					    AddToVectorFunctor &addToVectorFunctor,
-					    AddScaledVectorFunctor &addScaledVectorFunctor,
+					    const MatrixVectorMultiplyFunctor &matrixVectorMultiplyFunctor,
+					    const PreconditionerFunctor &preconditionerFunctor,
+					    const DotProductFunctor &dotProductFunctor,
+					    const SquaredL2NormFunctor &squaredNormFunctor,
+					    const AddToVectorFunctor &addToVectorFunctor,
+					    const AddScaledVectorFunctor &addScaledVectorFunctor,
 					    const StoreReal tolerance,
 					    const int maxIterations)
     {
