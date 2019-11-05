@@ -131,10 +131,12 @@ namespace HDK::GeometricMultigridOperators
     setBoundaryDomainLabels(UT_VoxelArray<int> &domainCellLabels,
 			    const std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights);
 
-    UT_VoxelArray<int> buildCoarseCellLabels(const UT_VoxelArray<int> &sourceCellLabels);
+    UT_VoxelArray<int>
+    buildCoarseCellLabels(const UT_VoxelArray<int> &sourceCellLabels);
 
-    UT_Array<UT_Vector3I> buildBoundaryCells(const UT_VoxelArray<int> &sourceCellLabels,
-						const int boundaryWidth);
+    UT_Array<UT_Vector3I>
+    buildBoundaryCells(const UT_VoxelArray<int> &sourceCellLabels,
+			const int boundaryWidth);
 
     template<typename GridType>
     void
@@ -175,8 +177,8 @@ namespace HDK::GeometricMultigridOperators
 	UT_VoxelArray<StoreReal> tempSolution = solution;
 
 	// TODO: factor dx terms out
-	const SolveReal gridScalar = 1. / (SolveReal(dx) * SolveReal(dx));
-	constexpr SolveReal damped_fraction = 2. / 3.;
+	const SolveReal gridScalar = 1. / (dx * dx);
+	constexpr SolveReal dampedWeight = 2. / 3.;
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -228,7 +230,7 @@ namespace HDK::GeometricMultigridOperators
 			    laplacian += 6. * tempSolutionProbe.getValue(0, 0, 0);
 			    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
 			    residual /= (6. * gridScalar);
-			    solutionProbe.setValue(tempSolutionProbe.getValue(0, 0, 0) + damped_fraction * residual);
+			    solutionProbe.setValue(tempSolutionProbe.getValue(0, 0, 0) + dampedWeight * residual);
 			}
 		    }
 		}	
@@ -408,7 +410,7 @@ namespace HDK::GeometricMultigridOperators
 
 	const SolveReal gridScalar = 1. / (SolveReal(dx) * SolveReal(dx));
 
-	constexpr SolveReal damped_fraction = 2. / 3.;
+	constexpr SolveReal dampedWeight = 2. / 3.;
 
 	UT_Array<StoreReal> tempSolution;
 	tempSolution.setSize(listSize);
@@ -459,7 +461,7 @@ namespace HDK::GeometricMultigridOperators
 		    laplacian += 6. * solutionProbe.getValue(0,0,0);
 		    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
 		    residual /= (6. * gridScalar);
-		    tempSolution[cellIndex] = SolveReal(solutionProbe.getValue(0,0,0)) + damped_fraction * residual;
+		    tempSolution[cellIndex] = SolveReal(solutionProbe.getValue(0,0,0)) + dampedWeight * residual;
 		}
 		else
 		{
@@ -534,7 +536,7 @@ namespace HDK::GeometricMultigridOperators
 		    laplacian += diagonal * solutionProbe.getValue(0,0,0);
 		    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
 		    residual /= (diagonal * gridScalar);
-		    tempSolution[cellIndex] = SolveReal(solutionProbe.getValue(0,0,0)) + damped_fraction * residual;
+		    tempSolution[cellIndex] = SolveReal(solutionProbe.getValue(0,0,0)) + dampedWeight * residual;
 		}
 	    }
 	});
@@ -814,7 +816,7 @@ namespace HDK::GeometricMultigridOperators
 						sampleValue += restrictionWeights[xOffset] *
 								restrictionWeights[yOffset] *
 								restrictionWeights[zOffset] *
-								sourceProbes[yOffset][zOffset].getValue(xOffset);
+								SolveReal(sourceProbes[yOffset][zOffset].getValue(xOffset));
 
 #if !defined(NDEBUG)
 						if (!(sourceCellLabels(startCell + UT_Vector3I(xOffset, yOffset, zOffset)) == INTERIOR_CELL ||
@@ -1605,9 +1607,9 @@ namespace HDK::GeometricMultigridOperators
 			    {
 				UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 
-				bool hasBoundaryNeighbour = false;
+				bool isBoundaryCell = false;
 
-				for (int axis = 0; axis < 3 & !hasBoundaryNeighbour; ++axis)
+				for (int axis = 0; axis < 3 & !isBoundaryCells; ++axis)
 				    for (int direction : {0,1})
 				    {
 					UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
@@ -1617,7 +1619,7 @@ namespace HDK::GeometricMultigridOperators
 					if (domainCellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL ||
 					    domainCellLabels(adjacentCell) == CellLabels::EXTERIOR_CELL)
 					{
-					    hasBoundaryNeighbour = true;
+					    isBoundaryCell = true;
 					    break;
 					}
 
@@ -1626,7 +1628,7 @@ namespace HDK::GeometricMultigridOperators
 
 					if (boundaryWeights[axis](face) != 1)
 					{
-					    hasBoundaryNeighbour = true;
+					    isBoundaryCell = true;
 					    break;
 					}
 				    }

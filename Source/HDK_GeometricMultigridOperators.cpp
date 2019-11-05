@@ -110,8 +110,8 @@ namespace HDK::GeometricMultigridOperators {
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setArray(&destinationCellLabels);
 
-	    UT_VoxelProbeCube<int> readCellLabelProbe;
-	    readCellLabelProbe.setConstPlusArray(&destinationCellLabels);
+	    UT_VoxelProbeCube<int> cellLabelProbe;
+	    cellLabelProbe.setConstPlusArray(&destinationCellLabels);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
@@ -128,7 +128,7 @@ namespace HDK::GeometricMultigridOperators {
 		    {
 			if (vit.getValue() == CellLabels::INTERIOR_CELL)
 			{
-			    readCellLabelProbe.setIndexPlus(vit);
+			    cellLabelProbe.setIndexPlus(vit);
 
 			    bool hasBoundary = false;
 			    for (int axis = 0; axis < 3 && !hasBoundary; ++axis)
@@ -142,8 +142,8 @@ namespace HDK::GeometricMultigridOperators {
 #endif
 				    UT_Vector3I offset(0,0,0);
 				    offset[axis] += direction == 0 ? -1 : 1;
+				    
 				    auto localCellLabel = readCellLabelProbe.getValue(offset[0], offset[1], offset[2]);
-
 				    if (localCellLabel == CellLabels::EXTERIOR_CELL ||
 					localCellLabel == CellLabels::DIRICHLET_CELL)
 				    {
