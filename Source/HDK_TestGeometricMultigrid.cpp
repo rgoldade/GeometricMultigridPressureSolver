@@ -61,11 +61,9 @@ const SIM_DopDescription* HDK_TestGeometricMultigrid::getDopDescription()
 
     static PRM_Name	theTestConjugateGradientName("testConjugateGradient", "Test Conjugate Gradient");
 
-    static PRM_Name	theUseMultigridPreconditionerName("useMultigridPreconditioner", "Use Multigrid preconditioner");
+    static PRM_Name	theUseMultigridPreconditionerName("useMultigridPreconditioner", "Use Multigrid Preconditioner");
 
     static PRM_Name	theSolveCGGeometricallyName("solveCGGeometrically", "Solve CG Geometrically");
-
-    static PRM_Name	theMultigridLevelsName("multigridLevels", "Multigrid Levels");
 
     static PRM_Name	theSolverToleranceName("solverTolerance", "Solver Tolerance");
     static PRM_Default	theSolverToleranceDefault(1E-5);
@@ -126,8 +124,6 @@ const SIM_DopDescription* HDK_TestGeometricMultigrid::getDopDescription()
 	PRM_Template(PRM_TOGGLE, 1, &theSolveCGGeometricallyName, PRMzeroDefaults,
 			0, 0, 0, 0, 1, 0, &theTestConjugateGradientDisable),
 
-	PRM_Template(PRM_INT, 1, &theMultigridLevelsName, PRMfourDefaults,
-			0, 0, 0, 0, 1, 0, &theTestConjugateGradientDisable),
 
 	PRM_Template(PRM_FLT, 1, &theSolverToleranceName, &theSolverToleranceDefault,
 			0, 0, 0, 0, 1, 0, &theTestConjugateGradientDisable),
@@ -172,8 +168,45 @@ const SIM_DopDescription* HDK_TestGeometricMultigrid::getDopDescription()
     return &theDopDescription;
 }
 
+template <typename StoreReal, typename IsExteriorCellFunctor, typename IsInteriorCellFunctor, typename IsDirichletCellFunctor>
+std::pair<UT_Vector3I, int> 
+buildExpandedDomain(UT_VoxelArray<int> &expandedDomainCellLabels,
+		    std::array<UT_VoxelArray<StoreReal>, 3> &expandedBoundaryWeights,
+		    const UT_VoxelArray<int> &baseDomainCellLabels,
+		    const std::array<UT_VoxelArray<StoreReal>, 3> &baseBoundaryWeights,
+		    const IsExteriorCellFunctor &isExteriorCell,
+		    const IsInteriorCellFunctor &isInteriorCell,
+		    const IsDirichletCellFunctor &isDirichletCell)
+{
+    using namespace HDK::GeometricMultigridOperators;
+
+    std::pair<UT_Vector3I, int> mgSettings = buildExpandedCellLabels(expandedDomainCellLabels, baseDomainCellLabels, isExteriorCell, isInteriorCell, isDirichletCell);
+
+    UT_Vector3I exteriorOffset = mgSettings.first;
+
+    // Build expanded boundary weights
+    for (int axis : {0, 1, 2})
+    {
+	UT_Vector3I size = expandedDomainCellLabels.getVoxelRes();
+	++size[axis];
+	expandedBoundaryWeights[axis].size(size[0], size[1], size[2]);
+	expandedBoundaryWeights[axis].constant(0);
+
+	buildExpandedBoundaryWeights(expandedBoundaryWeights[axis], baseBoundaryWeights[axis], expandedDomainCellLabels, exteriorOffset, axis);
+    }
+
+    // Build boundary cells
+    setBoundaryCellLabels(expandedDomainCellLabels, expandedBoundaryWeights);
+    
+    assert(unitTestBoundaryCells<StoreReal>(expandedDomainCellLabels, &expandedBoundaryWeights));
+    assert(unitTestExteriorCells(expandedDomainCellLabels));
+
+    return mgSettings;
+}
+
+
 template<typename StoreReal>
-fpreal
+StoreReal
 buildComplexDomain(UT_VoxelArray<int> &domainCellLabels,
 		    std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights,
 		    const int gridSize,
@@ -181,7 +214,11 @@ buildComplexDomain(UT_VoxelArray<int> &domainCellLabels,
 {
     using HDK::GeometricMultigridOperators::CellLabels;
     using SIM::FieldUtils::cellToCellMap;
+    using SIM::FieldUtils::cellToFaceMap;
     using SIM::FieldUtils::faceToCellMap;
+    using SIM::FieldUtils::forEachVoxelRange;
+    using SIM::FieldUtils::getFieldValue;
+    using SIM::FieldUtils::setFieldValue;
 
     assert(gridSize > 0);
 
@@ -192,14 +229,142 @@ buildComplexDomain(UT_VoxelArray<int> &domainCellLabels,
     // with a dx of 1 / gridSize.
     UT_Interrupt *boss = UTgetInterrupt();
 
-    const fpreal dx  = 1. / fpreal(gridSize);
+    const StoreReal dx  = 1. / StoreReal(gridSize);
+
+    auto dirichletIsoSurface = [](const UT_Vector3 &point)
+    {
+	return point[0] - .5 + .25 * SYSsin(2. * M_PI * point[1] + 4. * M_PI * point[2]);
+    };
+
+    SIM_RawField dirichletSurface;
+    dirichletSurface.init(SIM_FieldSample::SIM_SAMPLE_CENTER, UT_Vector3(0,0,0), UT_Vector3(1,1,1), gridSize, gridSize, gridSize);
+    dirichletSurface.makeConstant(0);
 
     UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
     {
 	UT_VoxelArrayIterator<int> vit;
 	vit.setConstArray(&domainCellLabels);
+	
+	if (boss->opInterrupt())
+	    return;
+	 
+	for (int i = range.begin(); i != range.end(); ++i)
+	{
+	    vit.myTileStart = i;
+	    vit.myTileEnd = i + 1;
+	    vit.rewind();
 
-	UT_VoxelTileIterator<int> vitt;
+	    for (; !vit.atEnd(); vit.advance())
+	    {
+		UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+		UT_Vector3 point = UT_Vector3(dx) * UT_Vector3(cell);
+		
+		setFieldValue(dirichletSurface, cell, dirichletIsoSurface(point));
+	    }
+	}
+    });
+
+    auto sphereIsoSurface = [](const UT_Vector3 &point)
+    {
+	const UT_Vector3 sphereCenter(.5, .5, .5);
+	constexpr StoreReal sphereRadius = .125;
+
+	return distance2(point, sphereCenter) - sphereRadius * sphereRadius;
+    };
+
+    // Initialize boundary weights
+    for (int axis : {0,1,2})
+    {
+	UT_Vector3I size(gridSize, gridSize, gridSize);
+	++size[axis];
+	boundaryWeights[axis].size(size[0], size[1], size[2]);
+	boundaryWeights[axis].constant(1);
+    }
+
+    if (useSolidSphere)
+    {
+	SIM_RawField solidSphereSurface;
+	solidSphereSurface.init(SIM_FieldSample::SIM_SAMPLE_CENTER, UT_Vector3(0,0,0), UT_Vector3(1,1,1), gridSize, gridSize, gridSize);
+	solidSphereSurface.makeConstant(0);
+
+	UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+	{
+	    UT_VoxelArrayIterator<int> vit;
+	    vit.setConstArray(&domainCellLabels);
+	
+	    if (boss->opInterrupt())
+		return;
+	 
+	    for (int i = range.begin(); i != range.end(); ++i)
+	    {
+		vit.myTileStart = i;
+		vit.myTileEnd = i + 1;
+		vit.rewind();
+
+		for (; !vit.atEnd(); vit.advance())
+		{
+		    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+		    UT_Vector3 point = UT_Vector3(dx) * UT_Vector3(cell);
+		
+		    setFieldValue(solidSphereSurface, cell, sphereIsoSurface(point));
+		}
+	    }
+	});
+
+	SIM_FieldSample sampleType[3] = { SIM_FieldSample::SIM_SAMPLE_FACEX, SIM_FieldSample::SIM_SAMPLE_FACEY, SIM_FieldSample::SIM_SAMPLE_FACEZ };
+
+	for (int axis : {0,1,2})
+	{
+	    SIM_RawField tempFaceWeights;
+	    tempFaceWeights.init(sampleType[axis], UT_Vector3(0,0,0), UT_Vector3(1,1,1), gridSize, gridSize, gridSize);
+
+	    tempFaceWeights.computeSDFWeightsFace(&solidSphereSurface, axis, true /* do invert */, .01 /* clamp all weights below this to zero */);
+
+	    UTparallelForEachNumber(boundaryWeights[axis].numTiles(), [&](const UT_BlockedRange<int> &range)
+	    {
+		UT_VoxelArrayIterator<StoreReal> vit(&boundaryWeights[axis]);
+
+		if (boss->opInterrupt())
+		    return;
+	 
+		for (int i = range.begin(); i != range.end(); ++i)
+		{
+		    vit.myTileStart = i;
+		    vit.myTileEnd = i + 1;
+		    vit.rewind();
+
+		    for (; !vit.atEnd(); vit.advance())
+		    {
+			UT_Vector3I face(vit.x(), vit.y(), vit.z());
+			boundaryWeights[axis].setValue(face, getFieldValue(tempFaceWeights, face));
+		    }
+		}
+	    });
+	}
+    }
+
+    for (int axis : {0, 1, 2})
+	for (int direction : {0, 1})
+	{
+	    UT_Vector3I startFace(0,0,0);
+	    UT_Vector3I endFace = boundaryWeights[axis].getVoxelRes();
+
+	    if (direction == 0)
+		endFace[axis] = 1;
+	    else
+		startFace[axis] = endFace[axis] - 1;
+
+	    forEachVoxelRange(startFace, endFace, [&](const UT_Vector3I &face)
+	    {
+		boundaryWeights[axis].setValue(face, 0);
+	    });
+	}
+
+
+    UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+    {
+	UT_VoxelArrayIterator<int> vit;
+	vit.setConstArray(&domainCellLabels);
 
 	if (boss->opInterrupt())
 	    return;
@@ -210,52 +375,41 @@ buildComplexDomain(UT_VoxelArray<int> &domainCellLabels,
 	    vit.myTileEnd = i + 1;
 	    vit.rewind();
 
-	    if (!vit.atEnd())
+	    for (; !vit.atEnd(); vit.advance())
 	    {
-		vitt.setTile(vit);
+		UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-		for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-		{
-		    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-		    UT_Vector3 point = UT_Vector3(dx) * UT_Vector3(cell);
-
-		    // Solid sphere at center of domain
-		    if (useSolidSphere)
+		// Make sure there is an open cut-cell face
+		bool hasOpenFace = false;
+		for (int axis : {0, 1, 2})
+		    for (int direction : {0, 1})
 		    {
-			const UT_Vector3 sphereCenter(.5);
-			const fpreal sphereRadius = .125;
+			UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 
-			if (distance2(point, sphereCenter) - sphereRadius * sphereRadius < 0)
-			{
-			    vitt.setValue(CellLabels::EXTERIOR_CELL);
-			    return;			    
-			}
+			if (boundaryWeights[axis](face) > 0)
+			    hasOpenFace = true;
 		    }
-
+		
+		if (hasOpenFace)
+		{
 		    // Sine wave for air-liquid boundary.
-		    fpreal sdf = point[0] - .5 + .25 * SYSsin(2. * M_PI * point[1]);
+		    StoreReal sdf = getFieldValue(dirichletSurface, cell);
 		    if (sdf > 0)
-			vitt.setValue(CellLabels::DIRICHLET_CELL);
+			domainCellLabels.setValue(cell, CellLabels::DIRICHLET_CELL);
 		    else
-			vitt.setValue(CellLabels::INTERIOR_CELL);
+			domainCellLabels.setValue(cell, CellLabels::INTERIOR_CELL);
 		}
+		else assert(domainCellLabels(cell) == CellLabels::EXTERIOR_CELL);		
 	    }
 	}
     });
 
-    // TODO: use proper ghost fluid and cut-cell weights
-    // Build boundary weights
-    for (int axis : {0,1,2})
+    // Build ghost fluid weights
+    for (int axis : {0, 1, 2})
     {
-	UT_Vector3I size(gridSize, gridSize, gridSize);
-	++size[axis];
-	boundaryWeights[axis].size(size[0], size[1], size[2]);
-	boundaryWeights[axis].constant(0);
-
 	UTparallelForEachNumber(boundaryWeights[axis].numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
 	    UT_VoxelArrayIterator<StoreReal> vit(&boundaryWeights[axis]);
-	    UT_VoxelTileIterator<StoreReal> vitt;
 
 	    if (boss->opInterrupt())
 		return;
@@ -266,44 +420,52 @@ buildComplexDomain(UT_VoxelArray<int> &domainCellLabels,
 		vit.myTileEnd = i + 1;
 		vit.rewind();
 
-		if (!vit.atEnd())
+		for (; !vit.atEnd(); vit.advance())
 		{
-		    vitt.setTile(vit);
+		    UT_Vector3I face(vit.x(), vit.y(), vit.z());
 
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		    if (boundaryWeights[axis](face) > 0)
 		    {
-			UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
+			UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
+			UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
 
-			bool isInterior = false;
-			bool isExterior = false;
-			for (int direction : {0, 1})
+			assert(backwardCell[axis] >= 0 && forwardCell[axis] < domainCellLabels.getVoxelRes()[axis]);
+
+			auto backwardLabel = domainCellLabels(backwardCell);
+			auto forwardLabel = domainCellLabels(forwardCell);
+
+			assert(backwardLabel != CellLabels::EXTERIOR_CELL && forwardLabel != CellLabels::EXTERIOR_CELL);
+
+			if (backwardLabel == CellLabels::DIRICHLET_CELL && forwardLabel == CellLabels::DIRICHLET_CELL)
+			    boundaryWeights[axis].setValue(face, 0);
+			else
 			{
-			    UT_Vector3I cell = faceToCellMap(face, axis, direction);
-
-			    if (cell[axis] < 0 || cell[axis] >= domainCellLabels.getVoxelRes()[axis])
+    			    if (backwardLabel == CellLabels::DIRICHLET_CELL || forwardLabel == CellLabels::DIRICHLET_CELL)
 			    {
-				isExterior = true;
-				continue;
+				StoreReal backwardSDF = getFieldValue(dirichletSurface, backwardCell);
+				StoreReal forwardSDF = getFieldValue(dirichletSurface, forwardCell);
+
+				// Sine wave for air-liquid boundary.
+				assert((backwardSDF > 0 && forwardSDF <= 0) || (backwardSDF <= 0 && forwardSDF > 0));
+
+				StoreReal theta = HDK::Utilities::computeGhostFluidWeights(backwardSDF, forwardSDF);
+				assert(theta < 1);
+				theta = SYSclamp(StoreReal(theta), StoreReal(.01), StoreReal(1));
+
+				boundaryWeights[axis].setValue(face, boundaryWeights[axis](face) / theta);
 			    }
-
-			    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
-				isInterior = true;
-			    else if (domainCellLabels(cell) == CellLabels::EXTERIOR_CELL)
-				isExterior = true;
 			}
-
-			if (isInterior && !isExterior)
-			    vitt.setValue(1);
 		    }
 		}
 	    }
 	});
     }
+
     return dx;
 }
 
 template<typename StoreReal>
-fpreal
+StoreReal
 buildSimpleDomain(UT_VoxelArray<int> &domainCellLabels,
 		    std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights,
 		    const int gridSize,
@@ -387,8 +549,6 @@ buildSimpleDomain(UT_VoxelArray<int> &domainCellLabels,
 	UT_VoxelArrayIterator<int> vit;
 	vit.setConstArray(&domainCellLabels);
 
-	UT_VoxelTileIterator<int> vitt;
-
 	if (boss->opInterrupt())
 	    return;
 	 
@@ -398,19 +558,14 @@ buildSimpleDomain(UT_VoxelArray<int> &domainCellLabels,
 	    vit.myTileEnd = i + 1;
 	    vit.rewind();
 
-	    if (!vit.atEnd())
+	    for (; !vit.atEnd(); vit.advance())
 	    {
-		vitt.setTile(vit);
-
-		for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+		if (cell[0] >= startCell[0] && cell[0] < endCell[0] &&
+		    cell[1] >= startCell[1] && cell[1] < endCell[1] &&
+		    cell[2] >= startCell[2] && cell[2] < endCell[2])
 		{
-		    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-		    if (cell[0] >= startCell[0] && cell[0] < endCell[0] &&
-			cell[1] >= startCell[1] && cell[1] < endCell[1] &&
-			cell[2] >= startCell[2] && cell[2] < endCell[2])
-		    {
-			vitt.setValue(CellLabels::INTERIOR_CELL);
-		    }
+		    vit.setValue(CellLabels::INTERIOR_CELL);
 		}
 	    }
 	}
@@ -429,8 +584,6 @@ buildSimpleDomain(UT_VoxelArray<int> &domainCellLabels,
 	    UT_VoxelArrayIterator<StoreReal> vit;
 	    vit.setConstArray(&boundaryWeights[axis]);
 
-	    UT_VoxelTileIterator<StoreReal> vitt;
-
 	    if (boss->opInterrupt())
 		return;
 	 
@@ -440,42 +593,36 @@ buildSimpleDomain(UT_VoxelArray<int> &domainCellLabels,
 		vit.myTileEnd = i + 1;
 		vit.rewind();
 
-		if (!vit.atEnd())
+		for (; !vit.atEnd(); vit.advance())
 		{
-		    vitt.setTile(vit);
+		    UT_Vector3I face(vit.x(), vit.y(), vit.z());
 
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		    bool isInterior = false;
+		    bool isExterior = false;
+		    for (int direction : {0, 1})
 		    {
-			UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
+			UT_Vector3I cell = faceToCellMap(face, axis, direction);
 
-			bool isInterior = false;
-			bool isExterior = false;
-			for (int direction : {0, 1})
+			if (cell[axis] < 0 || cell[axis] >= domainCellLabels.getVoxelRes()[axis])
 			{
-			    UT_Vector3I cell = faceToCellMap(face, axis, direction);
-
-			    if (cell[axis] < 0 || cell[axis] >= domainCellLabels.getVoxelRes()[axis])
-			    {
-				isExterior = true;
-				continue;
-			    }
-
-			    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
-				isInterior = true;
-			    else if (domainCellLabels(cell) == CellLabels::EXTERIOR_CELL)
-				isExterior = true;
+			    isExterior = true;
+			    continue;
 			}
 
-			if (isInterior && !isExterior)
-			    vitt.setValue(1);
+			if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+			    isInterior = true;
+			else if (domainCellLabels(cell) == CellLabels::EXTERIOR_CELL)
+			    isExterior = true;
 		    }
+
+		    if (isInterior && !isExterior)
+			vit.setValue(1);
 		}
 	    }
 	});
     }
 
-    // Return dx
-    return 1. / fpreal(gridSize);
+    return StoreReal(1.) / StoreReal(gridSize);
 }
 
 bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
@@ -502,19 +649,16 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
     UT_Interrupt *boss = UTgetInterrupt();
 
     UT_VoxelArray<int> domainCellLabels;
-    std::array<UT_VoxelArray<StoreReal>, 3> boundaryWeights;    
+    std::array<UT_VoxelArray<StoreReal>, 3> boundaryWeights;
+
     {
 	std::cout << "  Build test domain" << std::endl;
 
 	UT_VoxelArray<int> baseDomainCellLabels;
 	std::array<UT_VoxelArray<StoreReal>, 3> baseBoundaryWeights;
+
 	if (getUseComplexDomain())
-	{
-	    if (getUseSolidSphere())
-		dx = buildComplexDomain(baseDomainCellLabels, baseBoundaryWeights, gridSize, true /* use solid sphere */);
-	    else
-		dx = buildComplexDomain(baseDomainCellLabels, baseBoundaryWeights, gridSize, false /* use solid sphere */);
-	}
+	    dx = buildComplexDomain(baseDomainCellLabels, baseBoundaryWeights, gridSize, getUseSolidSphere());
 	else
 	    dx = buildSimpleDomain(baseDomainCellLabels, baseBoundaryWeights, gridSize, 1 /*Dirichlet band*/);
 
@@ -523,28 +667,11 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	auto isInteriorCell = [](const int value) { return value == CellLabels::INTERIOR_CELL; };
 	auto isDirichletCell = [](const int value) { return value == CellLabels::DIRICHLET_CELL; };
 
-	std::pair<UT_Vector3I, int> mgSettings = buildExpandedMGDomainLabels(domainCellLabels, baseDomainCellLabels, isExteriorCell, isInteriorCell, isDirichletCell);
-	
+	std::pair<UT_Vector3I, int> mgSettings = buildExpandedDomain(domainCellLabels, boundaryWeights, baseDomainCellLabels, baseBoundaryWeights, isExteriorCell, isInteriorCell, isDirichletCell);
+
 	exteriorOffset = mgSettings.first;
 	mgLevels = mgSettings.second;
-
-	// Build expanded boundary weights
-	for (int axis : {0,1,2})
-	{
-	    UT_Vector3I size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
-	    ++size[axis];
-	    boundaryWeights[axis].size(size[0], size[1], size[2]);
-	    boundaryWeights[axis].constant(0);
-
-	    buildExpandedBoundaryWeights(boundaryWeights[axis], baseBoundaryWeights[axis], domainCellLabels, exteriorOffset, axis);
-	}
-
-	// Build boundary cells
-	setBoundaryDomainLabels(domainCellLabels, boundaryWeights);
     }
-
-    assert(unitTestBoundaryCells(domainCellLabels));
-    assert(unitTestExteriorCells(domainCellLabels));
 
     if (getTestConjugateGradient())
     {
@@ -565,6 +692,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    {
 		UT_VoxelArrayIterator<int> vit;
 		vit.setConstArray(&domainCellLabels);
+
 		for (int i = range.begin(); i != range.end(); ++i)
 		{
 		    vit.myTileStart = i;
@@ -574,21 +702,17 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		    if (boss->opInterrupt())
 			break;
 		    
-		    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> solutionProbe;
-		    solutionProbe.setArray(&solutionGrid);
-
 		    if (!vit.isTileConstant() ||
 			vit.getValue() == CellLabels::INTERIOR_CELL ||
 			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
-			for (vit.rewind(); !vit.atEnd(); vit.advance())
+			for (; !vit.atEnd(); vit.advance())
 			{
 			    if (vit.getValue() == CellLabels::INTERIOR_CELL ||
 				vit.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
-				solutionProbe.setIndex(vit);
-				solutionProbe.setValue(distribution(generator));
-
+				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+				solutionGrid.setValue(cell, distribution(generator));
 			    }
 			}
 		    }
@@ -603,7 +727,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	// Set delta function
 	SolveReal deltaPercent = .1;
-	UT_Vector3I deltaPoint = UT_Vector3I(deltaPercent * UT_Vector3(gridSize));
+	UT_Vector3I deltaPoint = UT_Vector3I(deltaPercent * UT_Vector3(gridSize)) + exteriorOffset;
 
 	{
 	    SolveReal deltaAmplitude = getDeltaFunctionAmplitude();
@@ -615,110 +739,103 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    for (sampleCell[0] = startCell[0]; sampleCell[0] < endCell[0]; ++sampleCell[0])
 		for (sampleCell[1] = startCell[1]; sampleCell[1] < endCell[1]; ++sampleCell[1])
 		    for (sampleCell[2] = startCell[2]; sampleCell[2] < endCell[2]; ++sampleCell[2])
-			rhsGrid.setValue(sampleCell + exteriorOffset, deltaAmplitude);
+			rhsGrid.setValue(sampleCell, deltaAmplitude);
 	}
 
-	auto applyMatrixVectorMultiply = [&domainCellLabels, &boundaryWeights, dx](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
+	if (getSolveCGGeometrically())
 	{
-	    assert(destination.getVoxelRes() == source.getVoxelRes() &&
-		    source.getVoxelRes() == domainCellLabels.getVoxelRes());
-
-	    // Matrix-vector multiplication
-	    HDK::GeometricMultigridOperators::applyPoissonMatrix<SolveReal>(destination, source, domainCellLabels, dx, &boundaryWeights);
-	};
-
-	auto applyDotProduct = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid0, const UT_VoxelArray<StoreReal> &grid1)
-	{
-	    assert(grid0.getVoxelRes() == grid1.getVoxelRes() &&
-		    grid1.getVoxelRes() == domainCellLabels.getVoxelRes());
-
-	    return HDK::GeometricMultigridOperators::dotProduct<SolveReal>(grid0, grid1, domainCellLabels);
-	};
-
-	auto getSquaredL2Norm = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid)
-	{
-	    assert(grid.getVoxelRes() == domainCellLabels.getVoxelRes());
-
-	    return HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(grid, domainCellLabels);
-	};
-
-	auto addToVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
-						const UT_VoxelArray<StoreReal> &source,
-						const StoreReal scale)
-	{
-	    assert(destination.getVoxelRes() == source.getVoxelRes() &&
-		    source.getVoxelRes() == domainCellLabels.getVoxelRes());
-
-	    HDK::GeometricMultigridOperators::addToVector<SolveReal>(destination, source, scale, domainCellLabels);
-	};
-
-	auto addScaledVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
-						    const UT_VoxelArray<StoreReal> &unscaledSource,
-						    const UT_VoxelArray<StoreReal> &scaledSource,
-						    const StoreReal scale)
-	{
-	    assert(destination.getVoxelRes() == unscaledSource.getVoxelRes() &&
-		    unscaledSource.getVoxelRes() == scaledSource.getVoxelRes() &&
-		    scaledSource.getVoxelRes() == domainCellLabels.getVoxelRes());
-
-	    HDK::GeometricMultigridOperators::addVectors<SolveReal>(destination, unscaledSource, scaledSource, scale, domainCellLabels);
-	};
-
-	if (getUseMultigridPreconditioner())
-	{
-	    UT_StopWatch timer;
-	    timer.start();
-
-	    UT_StopWatch prebuildtimer;
-	    prebuildtimer.start();
-
-	    // Pre-build multigrid preconditioner
-	    HDK::GeometricMultigridPoissonSolver mgPreconditioner(domainCellLabels,
-								    boundaryWeights,										
-								    std::min(mgLevels, int(getMultigridLevels())),
-								    dx,
-								    true /* use Gauss Seidel smoother */);
-	    
-	    auto buildtime = prebuildtimer.stop();
-	    std::cout << "  MG pre-build time: " << buildtime << std::endl;
-	    prebuildtimer.clear();
-	    prebuildtimer.start();
-
-	    auto applyMultigridPreconditioner = [&mgPreconditioner, &domainCellLabels](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
+	    auto MatrixVectorMultiply = [&domainCellLabels, &boundaryWeights](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 	    {
 		assert(destination.getVoxelRes() == source.getVoxelRes() &&
 			source.getVoxelRes() == domainCellLabels.getVoxelRes());
 
-		mgPreconditioner.applyVCycle(destination, source);
+		// Matrix-vector multiplication
+		HDK::GeometricMultigridOperators::applyPoissonMatrix<SolveReal>(destination, source, domainCellLabels, &boundaryWeights);
 	    };
 
-	    HDK::solveGeometricConjugateGradient(solutionGrid,
-						    rhsGrid,
-						    applyMatrixVectorMultiply,
-						    applyMultigridPreconditioner,
-						    applyDotProduct,
-						    getSquaredL2Norm,
-						    addToVector,
-						    addScaledVector,
-						    SolveReal(getSolverTolerance()),
-						    getMaxSolverIterations());
-	    auto time = timer.stop();
-	    std::cout << "  MG preconditioned CG solve time: " << time << std::endl;
+	    auto DotProduct = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid0, const UT_VoxelArray<StoreReal> &grid1)
+	    {
+		assert(grid0.getVoxelRes() == grid1.getVoxelRes() &&
+			grid1.getVoxelRes() == domainCellLabels.getVoxelRes());
 
-	    // Compute residual
-	    UT_VoxelArray<StoreReal> residualGrid;
-	    residualGrid.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
-	    residualGrid.constant(0);
+		return HDK::GeometricMultigridOperators::dotProduct<SolveReal>(grid0, grid1, domainCellLabels);
+	    };
 
-	    // Compute r = b - Ax
-	    computePoissonResidual(residualGrid, solutionGrid, rhsGrid, domainCellLabels, dx, &boundaryWeights);
+	    auto SquaredL2Norm = [&domainCellLabels](const UT_VoxelArray<StoreReal> &grid)
+	    {
+		assert(grid.getVoxelRes() == domainCellLabels.getVoxelRes());
 
-	    std::cout << "  L-infinity error: " << HDK::GeometricMultigridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
-	    std::cout << "  Relative L-2: " << SYSsqrt(HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(rhsGrid, domainCellLabels)) << std::endl;
-	}
-	else
-	{
-	    if (getSolveCGGeometrically())
+		return HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(grid, domainCellLabels);
+	    };
+
+	    auto AddToVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
+						    const UT_VoxelArray<StoreReal> &source,
+						    const StoreReal scale)
+	    {
+		assert(destination.getVoxelRes() == source.getVoxelRes() &&
+			source.getVoxelRes() == domainCellLabels.getVoxelRes());
+
+		HDK::GeometricMultigridOperators::addToVector<SolveReal>(destination, source, scale, domainCellLabels);
+	    };
+
+	    auto AddScaledVector = [&domainCellLabels](UT_VoxelArray<StoreReal> &destination,
+							const UT_VoxelArray<StoreReal> &unscaledSource,
+							const UT_VoxelArray<StoreReal> &scaledSource,
+							const StoreReal scale)
+	    {
+		assert(destination.getVoxelRes() == unscaledSource.getVoxelRes() &&
+			unscaledSource.getVoxelRes() == scaledSource.getVoxelRes() &&
+			scaledSource.getVoxelRes() == domainCellLabels.getVoxelRes());
+
+		HDK::GeometricMultigridOperators::addVectors<SolveReal>(destination, unscaledSource, scaledSource, scale, domainCellLabels);
+	    };
+
+	    // Scale RHS by dx
+	    UT_VoxelArray<StoreReal> scaledRHSGrid = rhsGrid;
+	    HDK::GeometricMultigridOperators::scaleVector<SolveReal>(scaledRHSGrid, dx * dx, domainCellLabels);
+
+	    if (getUseMultigridPreconditioner())
+	    {
+		UT_StopWatch timer;
+		timer.start();
+
+		UT_StopWatch prebuildtimer;
+		prebuildtimer.start();
+
+		// Pre-build multigrid preconditioner
+		HDK::GeometricMultigridPoissonSolver mgPreconditioner(domainCellLabels,
+									boundaryWeights,
+									mgLevels,
+									true /* use Gauss Seidel smoother */);
+	    
+		auto buildtime = prebuildtimer.stop();
+		std::cout << "  MG pre-build time: " << buildtime << std::endl;
+		prebuildtimer.clear();
+		prebuildtimer.start();
+
+		auto MultigridPreconditioner = [&mgPreconditioner, &domainCellLabels](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
+		{
+		    assert(destination.getVoxelRes() == source.getVoxelRes() &&
+			    source.getVoxelRes() == domainCellLabels.getVoxelRes());
+
+		    mgPreconditioner.applyVCycle(destination, source);
+		};
+
+		HDK::solveGeometricConjugateGradient(solutionGrid,
+							scaledRHSGrid,
+							MatrixVectorMultiply,
+							MultigridPreconditioner,
+							DotProduct,
+							SquaredL2Norm,
+							AddToVector,
+							AddScaledVector,
+							SolveReal(getSolverTolerance()),
+							getMaxSolverIterations());
+
+		auto time = timer.stop();
+		std::cout << "  MG preconditioned CG solve time: " << time << std::endl;
+	    }
+	    else
 	    {
 		UT_StopWatch timer;
 		timer.start();
@@ -727,74 +844,93 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		diagonalPrecondGrid.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
 		diagonalPrecondGrid.constant(0);
 
+		using HDK::GeometricMultigridOperators::CellLabels;
+		using SIM::FieldUtils::cellToFaceMap;
+
+		UT_Interrupt *boss = UTgetInterrupt();
+
+		UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
 		{
-		    using HDK::GeometricMultigridOperators::CellLabels;
-		    using SIM::FieldUtils::cellToFaceMap;
+		    UT_VoxelArrayIterator<int> vit;
+		    vit.setConstArray(&domainCellLabels);
 
-		    UT_Interrupt *boss = UTgetInterrupt();
+		    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> diagonalProbe;
+		    diagonalProbe.setArray(&diagonalPrecondGrid);
 
-		    UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+		    for (int i = range.begin(); i != range.end(); ++i)
 		    {
-			UT_VoxelArrayIterator<int> vit;
-			vit.setConstArray(&domainCellLabels);
+			vit.myTileStart = i;
+			vit.myTileEnd = i + 1;
+			vit.rewind();
 
-			UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> diagonalProbe;
-			diagonalProbe.setArray(&diagonalPrecondGrid);
-
-			for (int i = range.begin(); i != range.end(); ++i)
+			if (boss->opInterrupt())
+			    break;
+			
+			if (!vit.isTileConstant() ||
+			    vit.getValue() == CellLabels::INTERIOR_CELL ||
+			    vit.getValue() == CellLabels::BOUNDARY_CELL)
 			{
-			    vit.myTileStart = i;
-			    vit.myTileEnd = i + 1;
-			    vit.rewind();
-
-			    if (boss->opInterrupt())
-				break;
-
-			    if (!vit.atEnd())
+			    for (; !vit.atEnd(); vit.advance())
 			    {
-				if (!vit.isTileConstant() ||
-				    vit.getValue() == CellLabels::INTERIOR_CELL ||
-				    vit.getValue() == CellLabels::BOUNDARY_CELL)
+				if (vit.getValue() == CellLabels::INTERIOR_CELL)
 				{
-				    for (; !vit.atEnd(); vit.advance())
-				    {
-					if (vit.getValue() == CellLabels::INTERIOR_CELL)
-					{
 #if !defined(NDEBUG)
-					    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-					    for (int axis : {0,1,2})
-						for (int direction : {0,1})
-						{
-						    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-						    assert(boundaryWeights[axis](face) == 1);
-
-						}
-#endif
-					    diagonalProbe.setIndex(vit);
-					    diagonalProbe.setValue(1. / 6.);
-					}
-					else if (vit.getValue() == CellLabels::BOUNDARY_CELL)
+				    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+				    for (int axis : {0,1,2})
+					for (int direction : {0,1})
 					{
-					    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+					    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-					    fpreal diagonal = 0;
-					    for (int axis : {0,1,2})
-						for (int direction : {0,1})
-						{
-						    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-						    diagonal += boundaryWeights[axis](face);
-						}
-					    diagonalProbe.setIndex(vit);
-					    diagonalProbe.setValue(1. / diagonal);
+					    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
+					    assert(domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL || domainCellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
+
+					    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+					    assert(boundaryWeights[axis](face) == 1);
 					}
-				    }
+#endif
+				    diagonalProbe.setIndex(vit);
+				    diagonalProbe.setValue(1. / 6.);
+				}
+				else if (vit.getValue() == CellLabels::BOUNDARY_CELL)
+				{
+				    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+
+				    fpreal diagonal = 0;
+				    for (int axis : {0,1,2})
+					for (int direction : {0,1})
+					{
+					    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
+
+					    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
+
+					    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+
+					    if (domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL)
+					    {
+						assert(boundaryWeights[axis](face) == 1);
+						++diagonal;
+					    }
+					    else if (domainCellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL || 
+							domainCellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL)
+					    {
+						diagonal += boundaryWeights[axis](face);
+					    }
+					    else
+					    {
+						assert(domainCellLabels(adjacentCell) == CellLabels::EXTERIOR_CELL);
+						assert(boundaryWeights[axis](face) == 0);
+					    }					
+					}
+
+				    diagonalProbe.setIndex(vit);
+				    diagonalProbe.setValue(1. / diagonal);
 				}
 			    }
 			}
-		    });
-		}
+		    }
+		});
 
-		auto applyDiagonalPreconditioner = [&domainCellLabels, &diagonalPrecondGrid](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
+		auto DiagonalPreconditioner = [&domainCellLabels, &diagonalPrecondGrid](UT_VoxelArray<StoreReal> &destination, const UT_VoxelArray<StoreReal> &source)
 		{
 		    assert(destination.getVoxelRes() == source.getVoxelRes() &&
 			    source.getVoxelRes() == domainCellLabels.getVoxelRes());
@@ -846,177 +982,178 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		};
 
 		HDK::solveGeometricConjugateGradient(solutionGrid,
-							rhsGrid,
-							applyMatrixVectorMultiply,
-							applyDiagonalPreconditioner,
-							applyDotProduct,
-							getSquaredL2Norm,
-							addToVector,
-							addScaledVector,
+							scaledRHSGrid,
+							MatrixVectorMultiply,
+							DiagonalPreconditioner,
+							DotProduct,
+							SquaredL2Norm,
+							AddToVector,
+							AddScaledVector,
 							SolveReal(getSolverTolerance()),
 							getMaxSolverIterations());
 
 		auto time = timer.stop();
 		std::cout << "  CG solve time: " << time << std::endl;
-
-		// Compute residual
-		UT_VoxelArray<StoreReal> residualGrid;
-		residualGrid.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
-		residualGrid.constant(0);
-
-		// Compute r = b - Ax
-		computePoissonResidual(residualGrid, solutionGrid, rhsGrid, domainCellLabels, dx, &boundaryWeights);
-
-		std::cout << "  L-infinity error: " << HDK::GeometricMultigridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
-		std::cout << "  Relative L-2: " << HDK::GeometricMultigridOperators::l2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::l2Norm<SolveReal>(rhsGrid, domainCellLabels) << std::endl;
 	    }
-	    else
+	    // Compute residual
+	    UT_VoxelArray<StoreReal> residualGrid;
+	    residualGrid.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
+	    residualGrid.constant(0);
+
+	    // Compute r = b - Ax
+	    computePoissonResidual<SolveReal>(residualGrid, solutionGrid, scaledRHSGrid, domainCellLabels, &boundaryWeights);
+
+	    // Scale residual by 1/dx^2
+	    HDK::GeometricMultigridOperators::scaleVector<SolveReal>(residualGrid, 1./ (dx * dx), domainCellLabels);
+
+	    std::cout << "  L-infinity error: " << HDK::GeometricMultigridOperators::infNorm(residualGrid, domainCellLabels) << std::endl;
+	    std::cout << "  Relative L-2: " << SYSsqrt(HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(residualGrid, domainCellLabels) / HDK::GeometricMultigridOperators::squaredL2Norm<SolveReal>(rhsGrid, domainCellLabels)) << std::endl;
+	}
+	else
+	{
+	    exint interiorCellCount = 0;
+
+	    UT_VoxelArray<int> solverIndices;
+	    solverIndices.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);;
+	    solverIndices.constant(-1);
+
+	    // TODO: make parallel
+
+	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 	    {
-		exint interiorCellCount = 0;
+		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
+		    solverIndices.setValue(cell, interiorCellCount++);
+	    });
 
-		UT_VoxelArray<int> solverIndices;
-		solverIndices.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);;
-		solverIndices.constant(-1);
+	    SolveReal gridScalar = 1. / (SolveReal(dx) * SolveReal(dx));
 
-		// TODO: make parallel
+	    std::vector<Eigen::Triplet<StoreReal>> sparseElements;
 
-		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
+	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
+	    {
+		exint index = solverIndices(cell);
+		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
 		{
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
-			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
-			solverIndices.setValue(cell, interiorCellCount++);
-		});
+		    exint index = solverIndices(cell);
+		    assert(index >= 0);
 
-		SolveReal gridScalar = 1. / (dx * dx);
-
-		std::vector<Eigen::Triplet<StoreReal>> sparseElements;
-
-		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
-		{
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
-			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
-		    {
-
-			SolveReal diagonal = 0;
-			exint index = solverIndices(cell);
-			assert(index >= 0);
-
-			if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		    for (int axis : {0,1,2})
+			for (int direction : {0,1})
 			{
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
+			    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-				    assert(domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-					    domainCellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
+			    assert(domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
+				    domainCellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
 
-				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-				    assert(boundaryWeights[axis](face) == 1);
+			    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+			    assert(boundaryWeights[axis](face) == 1);
 
-				    exint adjacentIndex = solverIndices(adjacentCell);
-				    assert(adjacentIndex >= 0);
+			    exint adjacentIndex = solverIndices(adjacentCell);
+			    assert(adjacentIndex >= 0);
 
-				    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar));
-				    diagonal += gridScalar;
-				}
+			    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar));
 			}
-			else if (domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
-			{
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
-
-				    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
-
-				    auto adjacentCellLabel = domainCellLabels(adjacentCell);
-				    if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
-				    {
-					UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-
-					assert(boundaryWeights[axis](face) == 1);
-
-					exint adjacentIndex = solverIndices(adjacentCell);
-					assert(adjacentIndex >= 0);
-
-					sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar));
-					diagonal += gridScalar;
-				    }
-				    else if (adjacentCellLabel == CellLabels::BOUNDARY_CELL)
-				    {
-					exint adjacentIndex = solverIndices(adjacentCell);
-					assert(adjacentIndex >= 0);
-
-					UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-					SolveReal weight = boundaryWeights[axis](face);
-
-					sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar * weight));
-					diagonal += gridScalar * weight;
-				    }
-				    else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
-				    {
-					exint adjacentIndex = solverIndices(adjacentCell);
-					assert(adjacentIndex == -1);
-
-					UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-					SolveReal weight = boundaryWeights[axis](face);
-
-					diagonal += gridScalar * weight;
-				    }
-				    else
-				    {
-					assert(adjacentCellLabel == CellLabels::EXTERIOR_CELL);
-					UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-					assert(boundaryWeights[axis](face) == 0);
-				    }
-				}
-			}
-			assert(diagonal > 0);
-			sparseElements.push_back(Eigen::Triplet<StoreReal>(index, index, diagonal));
-		    }
-		});
-		
-		using Vector = std::conditional<std::is_same<StoreReal, float>::value, Eigen::VectorXf, Eigen::VectorXd>::type;
-		Vector rhs = Vector::Zero(interiorCellCount);
-
-		forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
+		    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, index, 6. * gridScalar));
+		}
+		else if (domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		{
-		    if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
-			domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
-		    {
-			exint index = solverIndices(cell);
-			assert(index >= 0);
+		    assert(index >= 0);
+		    SolveReal diagonal = 0;
 
-			rhs(index) = rhsGrid(cell);
-		    }
-		});
+		    for (int axis : {0,1,2})
+			for (int direction : {0,1})
+			{
+			    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-		// Solve system
-		Eigen::SparseMatrix<StoreReal> sparseMatrix(interiorCellCount, interiorCellCount);
-		sparseMatrix.setFromTriplets(sparseElements.begin(), sparseElements.end());
-		sparseMatrix.makeCompressed();
+			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
 
-		UT_StopWatch timer;
-		timer.start();
+			    auto adjacentCellLabel = domainCellLabels(adjacentCell);
+			    if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
+			    {
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 
-		Eigen::ConjugateGradient<Eigen::SparseMatrix<StoreReal>, Eigen::Upper | Eigen::Lower > solver(sparseMatrix);
-		assert(solver.info() == Eigen::Success);
+				assert(boundaryWeights[axis](face) == 1);
 
-		solver.setTolerance(getSolverTolerance());
+				exint adjacentIndex = solverIndices(adjacentCell);
+				assert(adjacentIndex >= 0);
 
-		Vector solution = solver.solve(rhs);
+				sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar));
+				++diagonal;
+			    }
+			    else if (adjacentCellLabel == CellLabels::BOUNDARY_CELL)
+			    {
+				exint adjacentIndex = solverIndices(adjacentCell);
+				assert(adjacentIndex >= 0);
 
-		auto time = timer.stop();
-		std::cout << "  CG solve time: " << time << std::endl;
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				SolveReal weight = boundaryWeights[axis](face);
 
-		Vector residual = sparseMatrix * solution;
-		residual = rhs - residual;
+				sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar * weight));
+				diagonal += weight;
+			    }
+			    else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
+			    {
+				exint adjacentIndex = solverIndices(adjacentCell);
+				assert(adjacentIndex == -1);
 
-		std::cout << "Solver iterations: " << solver.iterations() << std::endl;
-		std::cout << "Solve error: " << solver.error() << std::endl;
-		std::cout << "Re-computed residual: " << std::sqrt(residual.squaredNorm() / rhs.squaredNorm()) << std::endl;
-	    }
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				SolveReal weight = boundaryWeights[axis](face);
+
+				diagonal += weight;
+			    }
+			    else
+			    {
+				assert(adjacentCellLabel == CellLabels::EXTERIOR_CELL);
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				assert(boundaryWeights[axis](face) == 0);
+			    }
+			}
+
+		    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, index, diagonal * gridScalar));
+		}
+		else (assert(index == -1));
+	    });
+	    
+	    using Vector = std::conditional<std::is_same<StoreReal, float>::value, Eigen::VectorXf, Eigen::VectorXd>::type;
+	    Vector rhs = Vector::Zero(interiorCellCount);
+
+	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
+	    {
+		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
+		{
+		    exint index = solverIndices(cell);
+		    assert(index >= 0);
+
+		    rhs(index) = rhsGrid(cell);
+		}
+	    });
+
+	    // Solve system
+	    Eigen::SparseMatrix<StoreReal> sparseMatrix(interiorCellCount, interiorCellCount);
+	    sparseMatrix.setFromTriplets(sparseElements.begin(), sparseElements.end());
+	    sparseMatrix.makeCompressed();
+
+	    UT_StopWatch timer;
+	    timer.start();
+
+	    Eigen::ConjugateGradient<Eigen::SparseMatrix<StoreReal>, Eigen::Upper | Eigen::Lower > solver(sparseMatrix);
+	    assert(solver.info() == Eigen::Success);
+
+	    solver.setTolerance(getSolverTolerance());
+
+	    Vector solution = solver.solve(rhs);
+
+	    auto time = timer.stop();
+	    std::cout << "  CG solve time: " << time << std::endl;
+
+	    Vector residual = sparseMatrix * solution;
+	    residual = rhs - residual;
+
+	    std::cout << "Solver iterations: " << solver.iterations() << std::endl;
+	    std::cout << "Solve error: " << solver.error() << std::endl;
+	    std::cout << "Re-computed residual: " << std::sqrt(residual.squaredNorm() / rhs.squaredNorm()) << std::endl;
 	}
     }
 
@@ -1036,20 +1173,20 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    std::default_random_engine generator;
 	    std::uniform_real_distribution<StoreReal> distribution(0, 1);
 
-	    forEachVoxelRange(UT_Vector3I(exint(0)), rhsA.getVoxelRes(), [&](const UT_Vector3I &cell)
+	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 	    {
-		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
+		{
 		    rhsA.setValue(cell, distribution(generator));
-	    });
-
-	    forEachVoxelRange(UT_Vector3I(exint(0)), rhsB.getVoxelRes(), [&](const UT_Vector3I &cell)
-	    {
-		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
 		    rhsB.setValue(cell, distribution(generator));
+		}
 	    });
+
+	    HDK::GeometricMultigridOperators::scaleVector<SolveReal>(rhsA, dx * dx, domainCellLabels);
+	    HDK::GeometricMultigridOperators::scaleVector<SolveReal>(rhsB, dx * dx, domainCellLabels);
 	}
 
-	// Test Jacobi smoother
 	{
 	    UT_VoxelArray<StoreReal> solutionA;
 	    solutionA.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
@@ -1065,90 +1202,18 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    uncompressBoundaryTiles(solutionA, boundaryCells);
 	    uncompressBoundaryTiles(solutionB, boundaryCells);
 
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, dx);
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, &boundaryWeights);
+	    jacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, &boundaryWeights);
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, &boundaryWeights);
 
-	    // Test Jacobi symmetry
-	    interiorJacobiPoissonSmoother<SolveReal>(solutionA,
-							rhsA,
-							domainCellLabels,
-							dx);
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, dx);
-
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, dx);
-
-	    interiorJacobiPoissonSmoother<SolveReal>(solutionB,
-							rhsB,
-							domainCellLabels,
-							dx);
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, dx);
-
-	    StoreReal dotA = dotProduct<SolveReal>(solutionA, rhsB, domainCellLabels);
-	    StoreReal dotB = dotProduct<SolveReal>(solutionB, rhsA, domainCellLabels);
-
-	    std::cout << "  Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
-
-	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
-	}
-	{
-	    UT_VoxelArray<StoreReal> solutionA;
-	    solutionA.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
-	    solutionA.constant(0);
-
-	    UT_VoxelArray<StoreReal> solutionB;
-	    solutionB.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
-	    solutionB.constant(0);
-
-	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(domainCellLabels, 2);
-
-	    // Uncompress tiles on the boundary
-	    uncompressBoundaryTiles(solutionA, boundaryCells);
-	    uncompressBoundaryTiles(solutionB, boundaryCells);
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
-							rhsA,
-							domainCellLabels,
-							boundaryCells,
-							dx,
-							&boundaryWeights);
-	    // Test Jacobi symmetry
-	    interiorJacobiPoissonSmoother<SolveReal>(solutionA,
-							rhsA,
-							domainCellLabels,
-							dx);
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
-							rhsA,
-							domainCellLabels,
-							boundaryCells,
-							dx,
-							&boundaryWeights);
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
-							rhsB,
-							domainCellLabels,
-							boundaryCells,
-							dx,
-							&boundaryWeights);
-
-	    interiorJacobiPoissonSmoother<SolveReal>(solutionB,
-							rhsB,
-							domainCellLabels,
-							dx);
-
-	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
-							rhsB,
-							domainCellLabels,
-							boundaryCells,
-							dx,
-							&boundaryWeights);
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, &boundaryWeights);
+	    jacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, &boundaryWeights);
+	    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, &boundaryWeights);
 
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, domainCellLabels);
 	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, domainCellLabels);
 	    
-	    std::cout << "  Weighted Boundary Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
+	    std::cout << "  Jacobi smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
@@ -1174,42 +1239,40 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 							    rhsA,
 							    domainCellLabels,
 							    boundaryCells,
-							    dx,
 							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-								    rhsA,
-								    domainCellLabels,
-								    dx,
-								    true /* smooth odd tiles */,
-								    true /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    domainCellLabels,
+							    true /* smooth odd tiles */,
+							    true /* iterate forward */,
+							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-								    rhsA,
-								    domainCellLabels,
-								    dx,
-								    false /* smooth even tiles */,
-								    true /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    domainCellLabels,
+							    false /* smooth even tiles */,
+							    true /* iterate forward */,
+							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-								    rhsA,
-								    domainCellLabels,
-								    dx,
-								    false /* smooth even tiles */,
-								    false /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    domainCellLabels,
+							    false /* smooth even tiles */,
+							    false /* iterate forward */,
+							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
-								    rhsA,
-								    domainCellLabels,
-								    dx,
-								    true /* smooth odd tiles */,
-								    false /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionA,
+							    rhsA,
+							    domainCellLabels,
+							    true /* smooth odd tiles */,
+							    false /* iterate forward */,
+							    &boundaryWeights);
 
 		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
 							    rhsA,
 							    domainCellLabels,
 							    boundaryCells,
-							    dx,
 							    &boundaryWeights);
 	    }
 
@@ -1219,49 +1282,47 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 							    rhsB,
 							    domainCellLabels,
 							    boundaryCells,
-							    dx,
 							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-								    rhsB,
-								    domainCellLabels,
-								    dx,
-								    true /* smooth odd tiles */,
-								    true /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    domainCellLabels,
+							    true /* smooth odd tiles */,
+							    true /* iterate forward */,
+							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-								    rhsB,
-								    domainCellLabels,
-								    dx,
-								    false /* smooth even tiles */,
-								    true /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    domainCellLabels,
+							    false /* smooth even tiles */,
+							    true /* iterate forward */,
+							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-								    rhsB,
-								    domainCellLabels,
-								    dx,
-								    false /* smooth even tiles */,
-								    false /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    domainCellLabels,
+							    false /* smooth even tiles */,
+							    false /* iterate forward */,
+							    &boundaryWeights);
 
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
-								    rhsB,
-								    domainCellLabels,
-								    dx,
-								    true /* smooth odd tiles */,
-								    false /* iterate forward */);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionB,
+							    rhsB,
+							    domainCellLabels,
+							    true /* smooth odd tiles */,
+							    false /* iterate forward */,
+							    &boundaryWeights);
 		
 		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
 							    rhsB,
 							    domainCellLabels,
 							    boundaryCells,
-							    dx,
 							    &boundaryWeights);							    
 	    }
 
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, domainCellLabels);
 	    fpreal32 dotB = dotProduct<SolveReal>(solutionB, rhsA, domainCellLabels);
 
-	    std::cout << "  Weighted Gauss Seidel smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
+	    std::cout << "  Gauss Seidel smoothing symmetry test. BMA: " << dotB << ". AMB: " << dotA << std::endl;
 
 	    assert(fabs(dotA - dotB) / fabs(std::max(dotA, dotB)) < 1E-10);
 	}
@@ -1272,16 +1333,12 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solverIndices.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);;
 	    solverIndices.constant(-1);
 
-	    // TODO: make parallel
-
 	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 	    {
 		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
 		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    solverIndices.setValue(cell, interiorCellCount++);
 	    });
-
-	    SolveReal gridScalar = 1. / (dx * dx);
 
 	    std::vector<Eigen::Triplet<StoreReal>> sparseElements;
 
@@ -1290,8 +1347,6 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
 		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		{
-
-		    SolveReal diagonal = 0;
 		    exint index = solverIndices(cell);
 		    assert(index >= 0);
 
@@ -1311,12 +1366,15 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				exint adjacentIndex = solverIndices(adjacentCell);
 				assert(adjacentIndex >= 0);
 
-				sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar));
-				diagonal += gridScalar;
+				sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -1));
 			    }
+
+			sparseElements.push_back(Eigen::Triplet<StoreReal>(index, index, 6.));
 		    }
 		    else if (domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    {
+			SolveReal diagonal = 0;
+
 			for (int axis : {0,1,2})
 			    for (int direction : {0,1})
 			    {
@@ -1334,8 +1392,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				    exint adjacentIndex = solverIndices(adjacentCell);
 				    assert(adjacentIndex >= 0);
 
-				    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar));
-				    diagonal += gridScalar;
+				    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -1));
+				    ++diagonal;
 				}
 				else if (adjacentCellLabel == CellLabels::BOUNDARY_CELL)
 				{
@@ -1345,8 +1403,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 				    SolveReal weight = boundaryWeights[axis](face);
 
-				    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -gridScalar * weight));
-				    diagonal += gridScalar * weight;
+				    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, adjacentIndex, -weight));
+				    diagonal += weight;
 				}
 				else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
 				{
@@ -1356,7 +1414,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 				    SolveReal weight = boundaryWeights[axis](face);
 
-				    diagonal += gridScalar * weight;
+				    diagonal += weight;
 				}
 				else
 				{
@@ -1365,9 +1423,10 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				    assert(boundaryWeights[axis](face) == 0);
 				}
 			    }
+
+			assert(diagonal > 0);
+			sparseElements.push_back(Eigen::Triplet<StoreReal>(index, index, diagonal));
 		    }
-		    assert(diagonal > 0);
-		    sparseElements.push_back(Eigen::Triplet<StoreReal>(index, index, diagonal));
 		}
 	    });
 	    
@@ -1461,7 +1520,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    // Test down and up sampling
 	    UT_VoxelArray<int> coarseDomainLabels = buildCoarseCellLabels(domainCellLabels);
 	    
-	    assert(unitTestBoundaryCells(coarseDomainLabels) && unitTestBoundaryCells(domainCellLabels));
+	    assert(unitTestBoundaryCells<StoreReal>(coarseDomainLabels) && unitTestBoundaryCells<StoreReal>(domainCellLabels, &boundaryWeights));
 	    assert(unitTestExteriorCells(coarseDomainLabels) && unitTestExteriorCells(domainCellLabels));
 	    assert(unitTestCoarsening(coarseDomainLabels, domainCellLabels));
 
@@ -1505,7 +1564,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    // Test single level correction
 	    UT_VoxelArray<int> coarseDomainLabels = buildCoarseCellLabels(domainCellLabels);
 
-	    assert(unitTestBoundaryCells(coarseDomainLabels) && unitTestBoundaryCells(domainCellLabels));
+	    assert(unitTestBoundaryCells<StoreReal>(coarseDomainLabels) && unitTestBoundaryCells<StoreReal>(domainCellLabels, &boundaryWeights));
 	    assert(unitTestExteriorCells(coarseDomainLabels) && unitTestExteriorCells(domainCellLabels));
 	    assert(unitTestCoarsening(coarseDomainLabels, domainCellLabels));
 
@@ -1526,11 +1585,33 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	    std::vector<Eigen::Triplet<SolveReal>> sparseElements;
 
-	    SolveReal gridScale = 1. / (dx * dx);
+	    SolveReal gridScalar = 1. / 4.;
 	    forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
 	    {
-		if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL ||
-		    coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
+		if (coarseDomainLabels(cell) == CellLabels::INTERIOR_CELL)
+		{
+		    int index = directSolverIndices(cell);
+		    assert(index >= 0);
+		    for (int axis : {0, 1, 2})
+			for (int direction : {0, 1})
+			{
+			    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
+
+			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < coarseGridSize[axis]);
+			    
+			    auto adjacentLabels = coarseDomainLabels(adjacentCell);
+			    assert(adjacentLabels == CellLabels::INTERIOR_CELL ||
+				    adjacentLabels == CellLabels::BOUNDARY_CELL);
+
+			    int adjacentIndex = directSolverIndices(adjacentCell);
+			    assert(adjacentIndex >= 0);
+
+			    sparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -gridScalar));
+			}
+
+		    sparseElements.push_back(Eigen::Triplet<SolveReal>(index, index, 6 * gridScalar));
+		}
+		else if (coarseDomainLabels(cell) == CellLabels::BOUNDARY_CELL)
 		{
 		    SolveReal diagonal = 0;
 		    int index = directSolverIndices(cell);
@@ -1543,20 +1624,21 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < coarseGridSize[axis]);
 
 			    auto adjacentCellLabels = coarseDomainLabels(adjacentCell);
+
 			    if (adjacentCellLabels == CellLabels::INTERIOR_CELL ||
 				adjacentCellLabels == CellLabels::BOUNDARY_CELL)
 			    {
 				exint adjacentIndex = directSolverIndices(adjacentCell);
 				assert(adjacentIndex >= 0);
 
-				sparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -gridScale));
-				diagonal += gridScale;
+				sparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -gridScalar));
+				++diagonal;
 			    }
 			    else if (adjacentCellLabels == CellLabels::DIRICHLET_CELL)
-				diagonal += gridScale;
+				++diagonal;
 			}
 
-		    sparseElements.push_back(Eigen::Triplet<SolveReal>(index, index, diagonal));
+		    sparseElements.push_back(Eigen::Triplet<SolveReal>(index, index, diagonal * gridScalar));
 		}
 	    });
 
@@ -1575,38 +1657,27 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
 	    solutionB.constant(0);
 
-	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(domainCellLabels, 2);
+	    UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(domainCellLabels, 3);
 
 	    // Uncompress tiles on the boundary
 	    uncompressBoundaryTiles(solutionA, boundaryCells);
 	    uncompressBoundaryTiles(solutionB, boundaryCells);
 
 	    {
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, &boundaryWeights);
 
-		interiorJacobiPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    domainCellLabels,
-							    dx);
+		jacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, &boundaryWeights);
 
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, &boundaryWeights);
 
 		// Compute new residual
 		UT_VoxelArray<StoreReal> residual;
 		residual.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
 		residual.constant(0);
 
-		computePoissonResidual<SolveReal>(residual, solutionA, rhsA, domainCellLabels, dx, &boundaryWeights);
+		computePoissonResidual<SolveReal>(residual, solutionA, rhsA, domainCellLabels, &boundaryWeights);
 		
 		UT_VoxelArray<StoreReal> coarseRhs;
 		coarseRhs.size(coarseGridSize[0], coarseGridSize[1], coarseGridSize[2]);
@@ -1629,11 +1700,11 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		    }
 		});
 
+		Vector solution = solver.solve(rhsVector);
+
 		UT_VoxelArray<StoreReal> coarseSolution;
 		coarseSolution.size(coarseGridSize[0], coarseGridSize[1], coarseGridSize[2]);
 		coarseSolution.constant(0);
-
-		Vector solution = solver.solve(rhsVector);
 
 		// Copy solution back
 		forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
@@ -1650,51 +1721,30 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		upsampleAndAdd<SolveReal>(solutionA, coarseSolution, domainCellLabels, coarseDomainLabels);
 
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, &boundaryWeights);
 
-		interiorJacobiPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    domainCellLabels,
-							    dx);
-		
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionA,
-							    rhsA,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		jacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, &boundaryWeights);
+
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionA, rhsA, domainCellLabels, boundaryCells, &boundaryWeights);
 	    }
 	    {
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
 
-		interiorJacobiPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    domainCellLabels,
-							    dx);
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, &boundaryWeights);
 
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		jacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, &boundaryWeights);
+
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, &boundaryWeights);
 
 		// Compute new residual
 		UT_VoxelArray<StoreReal> residual;
 		residual.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
 		residual.constant(0);
 
-		computePoissonResidual<SolveReal>(residual, solutionB, rhsB, domainCellLabels, dx, &boundaryWeights);
+		computePoissonResidual<SolveReal>(residual, solutionB, rhsB, domainCellLabels, &boundaryWeights);
 		
 		UT_VoxelArray<StoreReal> coarseRhs;
 		coarseRhs.size(coarseGridSize[0], coarseGridSize[1], coarseGridSize[2]);
@@ -1717,11 +1767,11 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		    }
 		});
 
+		Vector solution = solver.solve(rhsVector);
+
 		UT_VoxelArray<StoreReal> coarseSolution;
 		coarseSolution.size(coarseGridSize[0], coarseGridSize[1], coarseGridSize[2]);
 		coarseSolution.constant(0);
-
-		Vector solution = solver.solve(rhsVector);
 
 		// Copy solution back
 		forEachVoxelRange(UT_Vector3I(exint(0)), coarseGridSize, [&](const UT_Vector3I &cell)
@@ -1738,24 +1788,13 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 		upsampleAndAdd<SolveReal>(solutionB, coarseSolution, domainCellLabels, coarseDomainLabels);
 
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, &boundaryWeights);
 
-		interiorJacobiPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    domainCellLabels,
-							    dx);
+		jacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, &boundaryWeights);
 
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionB,
-							    rhsB,
-							    domainCellLabels,
-							    boundaryCells,
-							    dx,
-							    &boundaryWeights);
+		for (int iteration = 0; iteration < 3; ++iteration)
+		    boundaryJacobiPoissonSmoother<SolveReal>(solutionB, rhsB, domainCellLabels, boundaryCells, &boundaryWeights);
 	    }
 
 	    fpreal32 dotA = dotProduct<SolveReal>(solutionA, rhsB, domainCellLabels);
@@ -1771,7 +1810,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionA.constant(0);
 
 	    {
-		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, dx, false);
+		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, false);
 
 		mgSolver.applyVCycle(solutionA, rhsA);
 		mgSolver.applyVCycle(solutionA, rhsA, true);
@@ -1784,7 +1823,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.constant(0);
 
 	    {
-		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, dx, false);
+		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, false);
 
 		mgSolver.applyVCycle(solutionB, rhsB);
 		mgSolver.applyVCycle(solutionB, rhsB, true);
@@ -1805,7 +1844,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionA.constant(0);
 
 	    {
-		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, dx, true);
+		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, true);
 		
 		mgSolver.applyVCycle(solutionA, rhsA);
 		mgSolver.applyVCycle(solutionA, rhsA, true);
@@ -1818,7 +1857,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    solutionB.constant(0);
 
 	    {
-		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, dx, true);
+		HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, true);
 
 		mgSolver.applyVCycle(solutionB, rhsB);
 		mgSolver.applyVCycle(solutionB, rhsB, true);
@@ -1854,7 +1893,6 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    {
 		UT_VoxelArrayIterator<int> vit;
 		vit.setConstArray(&domainCellLabels);
-		UT_VoxelTileIterator<int> vitt;
 
 		for (int i = range.begin(); i != range.end(); ++i)
 		{
@@ -1865,25 +1903,20 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 		    if (boss->opInterrupt())
 			break;
 
-		    if (!vit.atEnd())
+		    if (!vit.isTileConstant() ||
+			vit.getValue() == CellLabels::INTERIOR_CELL ||
+			vit.getValue() == CellLabels::BOUNDARY_CELL)
 		    {
-			if (!vit.isTileConstant() ||
-			    vit.getValue() == CellLabels::INTERIOR_CELL ||
-			    vit.getValue() == CellLabels::BOUNDARY_CELL)
+			for (; !vit.atEnd(); vit.advance())
 			{
-			    vitt.setTile(vit);
-
-			    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			    if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				vit.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
-				if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
-				    vitt.getValue() == CellLabels::BOUNDARY_CELL)
-				{
-				    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-				    UT_Vector3 point = dx * UT_Vector3(cell);
-				    solutionGrid.setValue(cell, std::sin(2 * M_PI * point[0]) * std::sin(2 * M_PI * point[1]) * std::sin(2 * M_PI * point[2]) +
-								std::sin(4 * M_PI * point[0]) * std::sin(4 * M_PI * point[1]) * std::sin(4 * M_PI * point[1]));
-				}
+				UT_Vector3 point = dx * UT_Vector3(cell);
+				solutionGrid.setValue(cell, std::sin(2 * M_PI * point[0]) * std::sin(2 * M_PI * point[1]) * std::sin(2 * M_PI * point[2]) +
+							    std::sin(4 * M_PI * point[0]) * std::sin(4 * M_PI * point[1]) * std::sin(4 * M_PI * point[1]));
 			    }
 			}
 		    }
@@ -1898,37 +1931,28 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	rhsGrid.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
 	rhsGrid.constant(0);
 
-	UT_VoxelArray<StoreReal> residualGrid;
-	residualGrid.size(domainCellLabels.getVoxelRes()[0], domainCellLabels.getVoxelRes()[1], domainCellLabels.getVoxelRes()[2]);
-	residualGrid.constant(0);
+	SolveReal infNormError = infNorm(solutionGrid, domainCellLabels);
+	SolveReal l2NormError = l2Norm<SolveReal>(solutionGrid, domainCellLabels);
 
-	computePoissonResidual<SolveReal>(residualGrid, solutionGrid, rhsGrid, domainCellLabels, dx);
-
-	fpreal infNormError = infNorm(residualGrid, domainCellLabels);
-	fpreal l2NormError = l2Norm<SolveReal>(residualGrid, domainCellLabels);
-
-	std::cout << "L-infinity norm: " << infNormError << std::endl;
-	std::cout << "L-2 norm: " << l2NormError << std::endl;
+	std::cout << "Initiail L-infinity norm: " << infNormError << std::endl;
+	std::cout << "Initial L-2 norm: " << l2NormError << std::endl;
 
 	std::cout << "  Apply one level of v-cycle" << std::endl;
 
 	// Pre-build multigrid preconditioner
-	HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, 2 /* levels in v-cycle */, dx, false /* use Jacobi smoothing */);
+	HDK::GeometricMultigridPoissonSolver mgSolver(domainCellLabels, boundaryWeights, mgLevels, false /* use tiled GS smoothing */);
 
-	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
-	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
-	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
-	mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
+	for (int iteration = 0; iteration < 50; ++iteration)
+	{
+	    mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
 
-	std::cout << "  Compute test residual" << std::endl;
+	    infNormError = infNorm(solutionGrid, domainCellLabels);
+	    l2NormError = l2Norm<SolveReal>(solutionGrid, domainCellLabels);
 
-	computePoissonResidual<SolveReal>(residualGrid, solutionGrid, rhsGrid, domainCellLabels, dx);
-
-	infNormError = infNorm(residualGrid, domainCellLabels);
-	l2NormError = l2Norm<SolveReal>(residualGrid, domainCellLabels);
-
-	std::cout << "L-infinity norm: " << infNormError << std::endl;
-	std::cout << "L-2 norm: " << l2NormError << std::endl;
+	    std::cout << "Iteration: " << iteration << std::endl;
+	    std::cout << "Initiail L-infinity norm: " << infNormError << std::endl;
+	    std::cout << "Initial L-2 norm: " << l2NormError << std::endl;
+	}
     }
 
     if (getTestSmoother())
@@ -1956,7 +1980,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	
 	    forEachVoxelRange(UT_Vector3I(exint(0)), domainCellLabels.getVoxelRes(), [&](const UT_Vector3I &cell)
 	    {
-		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL)
+		if (domainCellLabels(cell) == CellLabels::INTERIOR_CELL ||
+		    domainCellLabels(cell) == CellLabels::BOUNDARY_CELL)
 		    solutionGrid.setValue(cell, distribution(generator));
 	    });
 	}
@@ -1966,7 +1991,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	// Set delta function
 	SolveReal deltaPercent = .1;
-	UT_Vector3I deltaPoint = UT_Vector3I(deltaPercent * UT_Vector3(gridSize));
+	UT_Vector3I deltaPoint = UT_Vector3I(deltaPercent * UT_Vector3(gridSize)) + exteriorOffset;
 
 	{
 	    SolveReal deltaAmplitude = getDeltaFunctionAmplitude();
@@ -1978,10 +2003,12 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    for (sampleCell[0] = startCell[0]; sampleCell[0] < endCell[0]; ++sampleCell[0])
 		for (sampleCell[1] = startCell[1]; sampleCell[1] < endCell[1]; ++sampleCell[1])
 		    for (sampleCell[2] = startCell[2]; sampleCell[2] < endCell[2]; ++sampleCell[2])
-			rhsGrid.setValue(sampleCell + exteriorOffset, deltaAmplitude);
+			rhsGrid.setValue(sampleCell, deltaAmplitude);
 	}
 
-	UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(domainCellLabels, 2);
+	HDK::GeometricMultigridOperators::scaleVector<SolveReal>(rhsGrid, dx * dx, domainCellLabels);
+
+	UT_Array<UT_Vector3I> boundaryCells = buildBoundaryCells(domainCellLabels, 3);
 
 	using namespace HDK::GeometricMultigridOperators;
 
@@ -1999,48 +2026,62 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	SolveReal count = 0;
 	for (; iteration < maxSmootherIterations; ++iteration)
 	{
-	    if (useGaussSeidelSmoothing)
-	    {
-		UT_StopWatch timer;
-		timer.start();
-
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, true /*smooth odd tiles*/, true /*smooth forwards*/);
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, false /*smooth even tiles*/, true /*smooth forwards*/);
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, false /*smooth even tiles*/, false /*smooth backwards*/);
-		interiorTiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx, true /*smooth odd tiles*/, false /*smooth backwards*/);
-		
-		solvetime += timer.stop();
-		++count;
-		timer.clear();
-		timer.start();
-
-	    }
-	    else
-	    {
-		UT_StopWatch timer;
-		timer.start();
-
-		interiorJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, dx);
-
-		solvetime += timer.stop();
-		++count;
-		timer.clear();
-		timer.start();
-	    }
-
+	    for (int boundaryIteration = 0; boundaryIteration < 3; ++boundaryIteration)
 	    {
 		UT_StopWatch timer;
 		timer.start();
 
 		// Boundary smoothing
-		boundaryJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, boundaryCells, dx, &boundaryWeights);
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, boundaryCells, &boundaryWeights);
 
 		boundarySolveTime += timer.stop();
 		timer.clear();
 		timer.start();
 	    }
 
-	    computePoissonResidual<SolveReal>(residualGrid, solutionGrid, rhsGrid, domainCellLabels, dx, &boundaryWeights);
+	    if (useGaussSeidelSmoothing)
+	    {
+		UT_StopWatch timer;
+		timer.start();
+
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, true /*smooth odd tiles*/, true /*smooth forwards*/, &boundaryWeights);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, false /*smooth even tiles*/, true /*smooth forwards*/, &boundaryWeights);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, false /*smooth even tiles*/, false /*smooth backwards*/, &boundaryWeights);
+		tiledGaussSeidelPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, true /*smooth odd tiles*/, false /*smooth backwards*/, &boundaryWeights);
+
+		solvetime += timer.stop();
+		++count;
+		timer.clear();
+		timer.start();
+	    }
+	    else
+	    {
+		UT_StopWatch timer;
+		timer.start();
+
+		jacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, &boundaryWeights);
+
+		solvetime += timer.stop();
+		++count;
+		timer.clear();
+		timer.start();
+	    }
+	    
+	    for (int boundaryIteration = 0; boundaryIteration < 3; ++boundaryIteration)
+	    {
+		UT_StopWatch timer;
+		timer.start();
+
+		// Boundary smoothing
+		boundaryJacobiPoissonSmoother<SolveReal>(solutionGrid, rhsGrid, domainCellLabels, boundaryCells, &boundaryWeights);
+
+		boundarySolveTime += timer.stop();
+		timer.clear();
+		timer.start();
+	    }
+
+	    HDK::GeometricMultigridOperators::scaleVector<SolveReal>(residualGrid, 1. / (dx * dx), domainCellLabels);
+	    computePoissonResidual<SolveReal>(residualGrid, solutionGrid, rhsGrid, domainCellLabels, &boundaryWeights);
 
 	    fpreal infNormError = infNorm(residualGrid, domainCellLabels);
 	    fpreal l2NormError = l2Norm<SolveReal>(residualGrid, domainCellLabels);

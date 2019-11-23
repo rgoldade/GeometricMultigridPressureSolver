@@ -13,7 +13,7 @@ namespace HDK
     void
     copyGridToVector(Vector &vector,
 			const UT_VoxelArray<StoreReal> &gridVector,
-			const UT_VoxelArray<exint> &gridIndices,
+			const UT_VoxelArray<int> &gridIndices,
 			const UT_VoxelArray<int> &cellLabels)
     {
 	using namespace HDK::GeometricMultigridOperators;
@@ -25,7 +25,7 @@ namespace HDK
 
 	UTparallelForEachNumber(gridIndices.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
-	    UT_VoxelArrayIterator<exint> vit;
+	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&gridIndices);
 
 	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> gridVectorProbe;
@@ -40,33 +40,30 @@ namespace HDK
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant())
 		{
-		    if (!vit.isTileConstant())
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			for (; !vit.atEnd(); vit.advance())
-			{
-			    exint index = vit.getValue();
+			int index = vit.getValue();
 
-			    if (index >= 0)
-			    {
+			if (index >= 0)
+			{
 #if !defined(NDEBUG)
-				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
-					cellLabels(cell) == CellLabels::BOUNDARY_CELL);
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			    assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+				    cellLabels(cell) == CellLabels::BOUNDARY_CELL);
 #endif
-				gridVectorProbe.setIndex(vit);
-				vector(index) = gridVectorProbe.getValue();
-			    }
-#if !defined(NDEBUG)
-			    else
-			    {
-				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-				assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
-					cellLabels(cell) == CellLabels::BOUNDARY_CELL));
-			    }
-#endif
+			    gridVectorProbe.setIndex(vit);
+			    vector(index) = gridVectorProbe.getValue();
 			}
+#if !defined(NDEBUG)
+			else
+			{
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			    assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+				    cellLabels(cell) == CellLabels::BOUNDARY_CELL));
+			}
+#endif
 		    }
 		}
 	    }
@@ -77,7 +74,7 @@ namespace HDK
     void
     copyVectorToGrid(UT_VoxelArray<StoreReal> &gridVector,
 			const Vector &vector,
-			const UT_VoxelArray<exint> &gridIndices,
+			const UT_VoxelArray<int> &gridIndices,
 			const UT_VoxelArray<int> &cellLabels)
     {
 	using namespace HDK::GeometricMultigridOperators;
@@ -89,7 +86,7 @@ namespace HDK
 
 	UTparallelForEachNumber(gridIndices.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
-	    UT_VoxelArrayIterator<exint> vit;
+	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&gridIndices);
 
 	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> gridVectorProbe;
@@ -104,33 +101,30 @@ namespace HDK
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant())
 		{
-		    if (!vit.isTileConstant())
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			for (; !vit.atEnd(); vit.advance())
-			{
-			    exint index = vit.getValue();
+			int index = vit.getValue();
 
-			    if (index >= 0)
-			    {
+			if (index >= 0)
+			{
 #if !defined(NDEBUG)
-				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-				assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
-					cellLabels(cell) == CellLabels::BOUNDARY_CELL);
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			    assert(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+				    cellLabels(cell) == CellLabels::BOUNDARY_CELL);
 #endif				
-				gridVectorProbe.setIndex(vit);
-				gridVectorProbe.setValue(vector(index));
-			    }
-#if !defined(NDEBUG)
-			    else
-			    {
-				UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-				assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
-					cellLabels(cell) == CellLabels::BOUNDARY_CELL));
-			    }
-#endif
+			    gridVectorProbe.setIndex(vit);
+			    gridVectorProbe.setValue(vector(index));
 			}
+#if !defined(NDEBUG)
+			else
+			{
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			    assert(!(cellLabels(cell) == CellLabels::INTERIOR_CELL ||
+				    cellLabels(cell) == CellLabels::BOUNDARY_CELL));
+			}
+#endif
 		    }
 		}
 	    }
@@ -141,7 +135,6 @@ namespace HDK
     GeometricMultigridPoissonSolver::GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
 									const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights,
 									const int mgLevels,
-									const SolveReal dx,
 									const bool useGaussSeidel)
     : myMGLevels(mgLevels)
     , myBoundarySmootherWidth(3)
@@ -155,7 +148,6 @@ namespace HDK
 	timer.start();
 
 	assert(myMGLevels > 0);
-	assert(dx > 0);
 
 	// Verify that the initial domain cells are properly sized and contain the necessary EXTERIOR padding
 	assert(initialDomainCellLabels.getVoxelRes()[0] % 2 == 0 &&
@@ -166,21 +158,21 @@ namespace HDK
 		int(std::log2(initialDomainCellLabels.getVoxelRes()[1])) + 1 >= mgLevels &&
 		int(std::log2(initialDomainCellLabels.getVoxelRes()[2])) + 1 >= mgLevels);
 
-	myDomainCellLabels.setSize(myMGLevels);
-	myDomainCellLabels[0] = initialDomainCellLabels;
-	myDomainCellLabels[0].collapseAllTiles();
+	myCellLabels.setSize(myMGLevels);
+	myCellLabels[0] = initialDomainCellLabels;
+	myCellLabels[0].collapseAllTiles();
 
-	assert( boundaryWeights[0].getVoxelRes()[0] - 1 == myDomainCellLabels[0].getVoxelRes()[0] &&
-		boundaryWeights[0].getVoxelRes()[1]     == myDomainCellLabels[0].getVoxelRes()[1] &&
-		boundaryWeights[0].getVoxelRes()[2]     == myDomainCellLabels[0].getVoxelRes()[2] &&
+	assert( boundaryWeights[0].getVoxelRes()[0] - 1 == myCellLabels[0].getVoxelRes()[0] &&
+		boundaryWeights[0].getVoxelRes()[1]     == myCellLabels[0].getVoxelRes()[1] &&
+		boundaryWeights[0].getVoxelRes()[2]     == myCellLabels[0].getVoxelRes()[2] &&
 
-		boundaryWeights[1].getVoxelRes()[0]     == myDomainCellLabels[0].getVoxelRes()[0] &&
-		boundaryWeights[1].getVoxelRes()[1] - 1 == myDomainCellLabels[0].getVoxelRes()[1] &&
-		boundaryWeights[1].getVoxelRes()[2]     == myDomainCellLabels[0].getVoxelRes()[2] &&
+		boundaryWeights[1].getVoxelRes()[0]     == myCellLabels[0].getVoxelRes()[0] &&
+		boundaryWeights[1].getVoxelRes()[1] - 1 == myCellLabels[0].getVoxelRes()[1] &&
+		boundaryWeights[1].getVoxelRes()[2]     == myCellLabels[0].getVoxelRes()[2] &&
 
-		boundaryWeights[2].getVoxelRes()[0]     == myDomainCellLabels[0].getVoxelRes()[0] &&
-		boundaryWeights[2].getVoxelRes()[1]     == myDomainCellLabels[0].getVoxelRes()[1] &&
-		boundaryWeights[2].getVoxelRes()[2] - 1 == myDomainCellLabels[0].getVoxelRes()[2]);
+		boundaryWeights[2].getVoxelRes()[0]     == myCellLabels[0].getVoxelRes()[0] &&
+		boundaryWeights[2].getVoxelRes()[1]     == myCellLabels[0].getVoxelRes()[1] &&
+		boundaryWeights[2].getVoxelRes()[2] - 1 == myCellLabels[0].getVoxelRes()[2]);
 
 	for (int axis : {0,1,2})
 	    myFineBoundaryWeights[axis] = boundaryWeights[axis];
@@ -212,26 +204,23 @@ namespace HDK
 		    if (boss->opInterrupt())
 			break;
 
-		    if (!vit.atEnd())
+		    if (!vit.isTileConstant())
 		    {
-			if (!vit.isTileConstant())
+			for (; !vit.atEnd(); vit.advance())
 			{
-			    for (; !vit.atEnd(); vit.advance())
+			    if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				vit.getValue() == CellLabels::BOUNDARY_CELL)
 			    {
-				if (vit.getValue() == CellLabels::INTERIOR_CELL ||
-				    vit.getValue() == CellLabels::BOUNDARY_CELL)
-				{
-				    hasSolvableCell = true;
-				    return;
-				}
+				hasSolvableCell = true;
+				return;
 			    }
 			}
-			else if (vit.getValue() == CellLabels::INTERIOR_CELL ||
-				    vit.getValue() == CellLabels::BOUNDARY_CELL)
-			{
-			    hasSolvableCell = true;
-			    return;
-			}
+		    }
+		    else if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				vit.getValue() == CellLabels::BOUNDARY_CELL)
+		    {
+			hasSolvableCell = true;
+			return;
 		    }
 		}
 	    });
@@ -239,37 +228,32 @@ namespace HDK
 	    return hasSolvableCell;
 	};	    
 
-	assert(checkSolvableCell(myDomainCellLabels[0]));
-	assert(unitTestBoundaryCells(myDomainCellLabels[0]));
-	assert(unitTestExteriorCells(myDomainCellLabels[0]));
+	assert(checkSolvableCell(myCellLabels[0]));
+	assert(unitTestBoundaryCells<StoreReal>(myCellLabels[0], &myFineBoundaryWeights));
+	assert(unitTestExteriorCells(myCellLabels[0]));
 
 	// Precompute the coarsening strategy. Cap level if there are no longer interior cells
 	for (int level = 1; level < myMGLevels; ++level)
 	{
-	    myDomainCellLabels[level] = buildCoarseCellLabels(myDomainCellLabels[level - 1]);
+	    myCellLabels[level] = buildCoarseCellLabels(myCellLabels[level - 1]);
+	    myCellLabels[level].collapseAllTiles();
 
-	    if (!checkSolvableCell(myDomainCellLabels[level]))
+	    if (!checkSolvableCell(myCellLabels[level]))
 	    {
 		myMGLevels = level - 1;
-		myDomainCellLabels.setSize(myMGLevels);
+		myCellLabels.setSize(myMGLevels);
 		break;
 	    }
 
-	    assert(unitTestCoarsening(myDomainCellLabels[level], myDomainCellLabels[level - 1]));
-	    assert(unitTestBoundaryCells(myDomainCellLabels[level]));
-	    assert(unitTestExteriorCells(myDomainCellLabels[0]));
+	    assert(unitTestCoarsening(myCellLabels[level], myCellLabels[level - 1]));
+	    assert(unitTestBoundaryCells<StoreReal>(myCellLabels[level]));
+	    assert(unitTestExteriorCells(myCellLabels[level]));
 	}
 
 	time = timer.stop();
 	std::cout << "      Build coarse cell time: " << time << std::endl;
 	timer.clear();
 	timer.start();
-
-	myDx.setSize(myMGLevels);
-	myDx[0] = dx;
-	    
-	for (int level = 1; level < myMGLevels; ++level)
-	    myDx[level] = 2. * myDx[level - 1];
 
 	// Initialize solution vectors
 	mySolutionGrids.setSize(myMGLevels);
@@ -278,7 +262,7 @@ namespace HDK
 
 	for (int level = 0; level < myMGLevels; ++level)
 	{    
-	    UT_Vector3I localRes = myDomainCellLabels[level].getVoxelRes();
+	    UT_Vector3I localRes = myCellLabels[level].getVoxelRes();
 
 	    mySolutionGrids[level].size(localRes[0], localRes[1], localRes[2]);
 	    mySolutionGrids[level].constant(0);
@@ -292,7 +276,7 @@ namespace HDK
 
 	myBoundaryCells.setSize(myMGLevels);
 	for (int level = 0; level < myMGLevels; ++level)
-	    myBoundaryCells[level] = buildBoundaryCells(myDomainCellLabels[level], myBoundarySmootherWidth);
+	    myBoundaryCells[level] = buildBoundaryCells(myCellLabels[level], myBoundarySmootherWidth);
 
 	time = timer.stop();
 	std::cout << "      Build boundary cells time: " << time << std::endl;
@@ -301,15 +285,15 @@ namespace HDK
 
 	// Pre-build matrix at the coarsest level
 	{
-	    exint interiorCellCount = 0;
-	    UT_Vector3I coarsestSize = myDomainCellLabels[myMGLevels - 1].getVoxelRes();
+	    int interiorCellCount = 0;
+	    UT_Vector3I coarsestSize = myCellLabels[myMGLevels - 1].getVoxelRes();
 
 	    myDirectSolverIndices.size(coarsestSize[0], coarsestSize[1], coarsestSize[2]);
 	    myDirectSolverIndices.constant(UNLABELLED_CELL);
 
 	    {
 		UT_VoxelArrayIterator<int> vit;
-		vit.setConstArray(&myDomainCellLabels[myMGLevels - 1]);
+		vit.setConstArray(&myCellLabels[myMGLevels - 1]);
 		UT_VoxelTileIterator<int> vitt;
 
 		UT_Interrupt *boss = UTgetInterrupt();
@@ -342,15 +326,13 @@ namespace HDK
 
 	    std::vector<std::vector<Eigen::Triplet<SolveReal>>> parallelSparseElements(threadCount);
 
-	    SolveReal coarseGridScale = 1. / (myDx[myMGLevels - 1] * myDx[myMGLevels - 1]);
-
 	    UT_ThreadedAlgorithm buildPoissonSystemAlgorithm;
 	    buildPoissonSystemAlgorithm.run([&](const UT_JobInfo &info)
 	    {
 		UT_Interrupt *boss = UTgetInterrupt();
 
 		UT_VoxelArrayIterator<int> vit;
-		vit.setConstArray(&myDomainCellLabels[myMGLevels - 1]);
+		vit.setConstArray(&myCellLabels[myMGLevels - 1]);
 		UT_VoxelTileIterator<int> vitt;
 
 		std::vector<Eigen::Triplet<SolveReal>> &localSparseElements = parallelSparseElements[info.job()];
@@ -373,7 +355,7 @@ namespace HDK
 				UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 
 				SolveReal diagonal = 0;
-				exint index = myDirectSolverIndices(cell);
+				int index = myDirectSolverIndices(cell);
 				assert(index >= 0);
 
 				for (int axis : {0,1,2})
@@ -381,18 +363,18 @@ namespace HDK
 				    {
 					UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
-					auto adjacentCellLabel = myDomainCellLabels[myMGLevels - 1](adjacentCell);
+					auto adjacentCellLabel = myCellLabels[myMGLevels - 1](adjacentCell);
 					if (adjacentCellLabel == CellLabels::INTERIOR_CELL ||
 					    adjacentCellLabel == CellLabels::BOUNDARY_CELL)
 					{
-					    exint adjacentIndex = myDirectSolverIndices(adjacentCell);
+					    int adjacentIndex = myDirectSolverIndices(adjacentCell);
 					    assert(adjacentIndex >= 0);
 
-					    localSparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -coarseGridScale));
-					    diagonal += coarseGridScale;
+					    localSparseElements.push_back(Eigen::Triplet<SolveReal>(index, adjacentIndex, -1));
+					    ++diagonal;
 					}
 					else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
-					    diagonal += coarseGridScale;
+					    ++diagonal;
 				    }
 
 				localSparseElements.push_back(Eigen::Triplet<SolveReal>(index, index, diagonal));
@@ -418,15 +400,13 @@ namespace HDK
 	    }
 
 	    // Solve system
-	    sparseMatrix = Eigen::SparseMatrix<SolveReal>(interiorCellCount, interiorCellCount);
-	    sparseMatrix.setFromTriplets(sparseElements.begin(), sparseElements.end());
-	    sparseMatrix.makeCompressed();
+	    mySparseMatrix = Eigen::SparseMatrix<SolveReal>(interiorCellCount, interiorCellCount);
+	    mySparseMatrix.setFromTriplets(sparseElements.begin(), sparseElements.end());
+	    mySparseMatrix.makeCompressed();
 
-	    myCoarseSolver.compute(sparseMatrix);
+	    myCoarseSolver.compute(mySparseMatrix);
 
 	    assert(myCoarseSolver.info() == Eigen::Success);
-
-	    myCoarseRHSVector = Vector::Zero(interiorCellCount);
 	}
 
 	time = timer.stop();
@@ -443,20 +423,7 @@ namespace HDK
 	using namespace HDK::GeometricMultigridOperators;
 
 	assert(fineSolutionGrid.getVoxelRes() == fineRHSGrid.getVoxelRes() ||
-		fineRHSGrid.getVoxelRes() == myDomainCellLabels[0].getVoxelRes());
-
-	{
-	    UT_StopWatch precookTimer;
-	    precookTimer.start();
-
-	    if (!useInitialGuess)
-		fineSolutionGrid.constant(0);
-
-	    uncompressBoundaryTiles(fineSolutionGrid, myBoundaryCells[0]);
-
-	    auto time = precookTimer.stop();
-	    std::cout << "      V-cycle pre-cook time: " << time << std::endl;
-	}
+		fineRHSGrid.getVoxelRes() == myCellLabels[0].getVoxelRes());
 	
 	// Apply fine-level smoothing pass
 	{
@@ -466,14 +433,18 @@ namespace HDK
 		UT_StopWatch boundarySmoothTimer;
 		boundarySmoothTimer.start();
 
+		if (!useInitialGuess)
+		    fineSolutionGrid.constant(0);
+
+		uncompressBoundaryTiles(fineSolutionGrid, myBoundaryCells[0]);
+
 		// Smooth along boundaries
 		for (int boundaryIteration = 0; boundaryIteration < myBoundarySmootherIterations; ++boundaryIteration)
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
 								fineRHSGrid,
-								myDomainCellLabels[0],
+								myCellLabels[0],
 								myBoundaryCells[0],
-								myDx[0],
 								&myFineBoundaryWeights);
 		}
 
@@ -488,24 +459,24 @@ namespace HDK
 		// Apply smoother
 		if (myUseGaussSeidel)
 		{
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
-									fineRHSGrid,
-									myDomainCellLabels[0],
-									myDx[0],
-									true /*smooth odd tiles*/, true /*smooth forwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
+								fineRHSGrid,
+								myCellLabels[0],
+								true /*smooth odd tiles*/, true /*smooth forwards*/,
+								&myFineBoundaryWeights);
 
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
-									fineRHSGrid,
-									myDomainCellLabels[0],
-									myDx[0],
-									false /*smooth even tiles*/, true /*smooth forwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
+								fineRHSGrid,
+								myCellLabels[0],
+								false /*smooth even tiles*/, true /*smooth forwards*/,
+								&myFineBoundaryWeights);
 		}
 		else
 		{
-		    interiorJacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
-								fineRHSGrid,
-								myDomainCellLabels[0],
-								myDx[0]);
+		    jacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
+							fineRHSGrid,
+							myCellLabels[0],
+							&myFineBoundaryWeights);
 		}
 
 		auto time = smoothTimer.stop();
@@ -521,9 +492,8 @@ namespace HDK
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
 								fineRHSGrid,
-								myDomainCellLabels[0],
+								myCellLabels[0],
 								myBoundaryCells[0],
-								myDx[0],
 								&myFineBoundaryWeights);
 		}
 
@@ -535,12 +505,12 @@ namespace HDK
 		UT_StopWatch computeResidualTimer;
 		computeResidualTimer.start();
 
+		myResidualGrids[0].constant(0);
 		// Compute residual to restrict to the next level
 		computePoissonResidual<SolveReal>(myResidualGrids[0],
 						    fineSolutionGrid,
 						    fineRHSGrid,
-						    myDomainCellLabels[0],
-						    myDx[0],
+						    myCellLabels[0],
 						    &myFineBoundaryWeights);
 
 		auto time = computeResidualTimer.stop();
@@ -551,26 +521,15 @@ namespace HDK
 		UT_StopWatch restrictionTimer;
 		restrictionTimer.start();
 
+		myRHSGrids[1].constant(0);
+
 		downsample<SolveReal>(myRHSGrids[1],
 					myResidualGrids[0],
-					myDomainCellLabels[1],
-					myDomainCellLabels[0]);
+					myCellLabels[1],
+					myCellLabels[0]);
 
 		auto time = restrictionTimer.stop();
 		std::cout << "      Restriction time: " << time << std::endl;
-	    }
-
-	    {
-		UT_StopWatch cleanUpTimer;
-		cleanUpTimer.start();
-
-		mySolutionGrids[1].constant(0);
-
-		// Expand tiles at boundaries
-		uncompressBoundaryTiles(mySolutionGrids[1], myBoundaryCells[1]);
-
-		auto time = cleanUpTimer.stop();
-		std::cout << "      Clean up time: " << time << std::endl;
 	    }
 	}
 
@@ -583,14 +542,16 @@ namespace HDK
 		UT_StopWatch boundarySmoothTimer;
 		boundarySmoothTimer.start();
 
+		mySolutionGrids[level].constant(0);
+		uncompressBoundaryTiles(mySolutionGrids[level], myBoundaryCells[level]);
+
 		// Smooth along boundaries
 		for (int boundaryIteration = 0; boundaryIteration < myBoundarySmootherIterations; ++boundaryIteration)
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myDx[level]);
+								myCellLabels[level],
+								myBoundaryCells[level]);
 		}
 
 		auto time = boundarySmoothTimer.stop();
@@ -604,24 +565,21 @@ namespace HDK
 		// Apply smoother
 		if (myUseGaussSeidel)
 		{
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-									myRHSGrids[level],
-									myDomainCellLabels[level],
-									myDx[level],
-									true /*smooth odd tiles*/, true /*smooth forwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								myRHSGrids[level],
+								myCellLabels[level],
+								true /*smooth odd tiles*/, true /*smooth forwards*/);
 
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-									myRHSGrids[level],
-									myDomainCellLabels[level],
-									myDx[level],
-									false /*smooth even tiles*/, true /*smooth forwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								myRHSGrids[level],
+								myCellLabels[level],
+								false /*smooth even tiles*/, true /*smooth forwards*/);
 		}
 		else
 		{
-		    interiorJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myDx[level]);
+		    jacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+							myRHSGrids[level],
+							myCellLabels[level]);
 		}
 
 		auto time = smoothTimer.stop();
@@ -637,9 +595,8 @@ namespace HDK
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myDx[level]);
+								myCellLabels[level],
+								myBoundaryCells[level]);
 		}
 
 		auto time = boundarySmoothTimer.stop();
@@ -650,12 +607,12 @@ namespace HDK
 		UT_StopWatch computeResidualTimer;
 		computeResidualTimer.start();
 
+		//myResidualGrids[level].constant(0);
 		// Compute residual to restrict to the next level
 		computePoissonResidual<SolveReal>(myResidualGrids[level],
 						    mySolutionGrids[level],
 						    myRHSGrids[level],
-						    myDomainCellLabels[level],
-						    myDx[level]);
+						    myCellLabels[level]);
 
 		auto time = computeResidualTimer.stop();
 		std::cout << "      Compute residual time: " << time << std::endl;
@@ -665,28 +622,16 @@ namespace HDK
 		UT_StopWatch restrictionTimer;
 		restrictionTimer.start();
 
+		//myRHSGrids[level + 1].constant(0);
+
 		downsample<SolveReal>(myRHSGrids[level + 1],
 					myResidualGrids[level],
-					myDomainCellLabels[level + 1],
-					myDomainCellLabels[level]);
+					myCellLabels[level + 1],
+					myCellLabels[level]);
+
 
 		auto time = restrictionTimer.stop();
 		std::cout << "      Restriction time: " << time << std::endl;
-	    }
-
-	    {
-		UT_StopWatch cleanUpTimer;
-		cleanUpTimer.start();
-
-		mySolutionGrids[level + 1].constant(0);
-
-		// Expand tiles at boundaries
-		if (level < myMGLevels - 1)
-		    uncompressBoundaryTiles(mySolutionGrids[level + 1], myBoundaryCells[level + 1]);
-
-
-		auto time = cleanUpTimer.stop();
-		std::cout << "      Clean up time: " << time << std::endl;
 	    }
 	}
 
@@ -694,17 +639,19 @@ namespace HDK
 	    UT_StopWatch directSolveTimer;
 	    directSolveTimer.start();
 
-	    copyGridToVector(myCoarseRHSVector,
+	    Vector coarseRHSVector = Vector::Zero(mySparseMatrix.rows());
+
+	    copyGridToVector(coarseRHSVector,
 				myRHSGrids[myMGLevels - 1],
 				myDirectSolverIndices,
-				myDomainCellLabels[myMGLevels - 1]);
+				myCellLabels[myMGLevels - 1]);
 
-	    Vector directSolution = myCoarseSolver.solve(myCoarseRHSVector);
+	    Vector directSolution = myCoarseSolver.solve(coarseRHSVector);
 
 	    copyVectorToGrid(mySolutionGrids[myMGLevels - 1],
 				directSolution,
 				myDirectSolverIndices,
-				myDomainCellLabels[myMGLevels - 1]);
+				myCellLabels[myMGLevels - 1]);
 
 	    auto time = directSolveTimer.stop();
 	    std::cout << "      Direct solve time: " << time << std::endl;
@@ -720,8 +667,8 @@ namespace HDK
 		
 		upsampleAndAdd<SolveReal>(mySolutionGrids[level],
 					    mySolutionGrids[level + 1],
-					    myDomainCellLabels[level],
-					    myDomainCellLabels[level + 1]);
+					    myCellLabels[level],
+					    myCellLabels[level + 1]);
 
 		auto time = prolongationTimer.stop();
 		std::cout << "      Prolongation time: " << time << std::endl;
@@ -736,9 +683,8 @@ namespace HDK
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myDx[level]);
+								myCellLabels[level],
+								myBoundaryCells[level]);
 		}
 
 		auto time = boundarySmoothTimer.stop();
@@ -752,24 +698,21 @@ namespace HDK
 		// Smooth interior
 		if (myUseGaussSeidel)
 		{
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-									myRHSGrids[level],
-									myDomainCellLabels[level],
-									myDx[level],
-									false /*smooth even tiles*/, false /*smooth backwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								myRHSGrids[level],
+								myCellLabels[level],
+								false /*smooth even tiles*/, false /*smooth backwards*/);
 
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
-									myRHSGrids[level],
-									myDomainCellLabels[level],
-									myDx[level],
-									true /*smooth odd tiles*/, false /*smooth backwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(mySolutionGrids[level],
+								myRHSGrids[level],
+								myCellLabels[level],
+								true /*smooth odd tiles*/, false /*smooth backwards*/);
 		}
 		else
 		{
-		    interiorJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
-								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myDx[level]);
+		    jacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
+							myRHSGrids[level],
+							myCellLabels[level]);
 		}
 
 		auto time = smoothTimer.stop();
@@ -784,9 +727,8 @@ namespace HDK
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(mySolutionGrids[level],
 								myRHSGrids[level],
-								myDomainCellLabels[level],
-								myBoundaryCells[level],
-								myDx[level]);
+								myCellLabels[level],
+								myBoundaryCells[level]);
 		}
 
 		auto time = boundarySmoothTimer.stop();
@@ -800,11 +742,11 @@ namespace HDK
 	    {
 		UT_StopWatch prolongationTimer;
 		prolongationTimer.start();
-		
+	
 		upsampleAndAdd<SolveReal>(fineSolutionGrid,
 					    mySolutionGrids[1],
-					    myDomainCellLabels[0],
-					    myDomainCellLabels[1]);
+					    myCellLabels[0],
+					    myCellLabels[1]);
 
 		auto time = prolongationTimer.stop();
 		std::cout << "      Prolongation time: " << time << std::endl;
@@ -819,9 +761,8 @@ namespace HDK
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
 								fineRHSGrid,
-								myDomainCellLabels[0],
+								myCellLabels[0],
 								myBoundaryCells[0],
-								myDx[0],
 								&myFineBoundaryWeights);
 		}
 
@@ -836,24 +777,24 @@ namespace HDK
 		// Smooth interior
 		if (myUseGaussSeidel)
 		{
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
-									fineRHSGrid,
-									myDomainCellLabels[0],
-									myDx[0],
-									false /*smooth even tiles*/, false /*smooth backwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
+								fineRHSGrid,
+								myCellLabels[0],
+								false /*smooth even tiles*/, false /*smooth backwards*/,
+								&myFineBoundaryWeights);
 
-		    interiorTiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
-									fineRHSGrid,
-									myDomainCellLabels[0],
-									myDx[0],
-									true /*smooth odd tiles*/, false /*smooth backwards*/);
+		    tiledGaussSeidelPoissonSmoother<SolveReal>(fineSolutionGrid,
+								fineRHSGrid,
+								myCellLabels[0],
+								true /*smooth odd tiles*/, false /*smooth backwards*/,
+								&myFineBoundaryWeights);
 		}
 		else
 		{
-		    interiorJacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
-								fineRHSGrid,
-								myDomainCellLabels[0],
-								myDx[0]);
+		    jacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
+							fineRHSGrid,
+							myCellLabels[0],
+							&myFineBoundaryWeights);
 		}
 
 		auto time = smoothTimer.stop();
@@ -868,9 +809,8 @@ namespace HDK
 		{
 		    boundaryJacobiPoissonSmoother<SolveReal>(fineSolutionGrid,
 								fineRHSGrid,
-								myDomainCellLabels[0],
+								myCellLabels[0],
 								myBoundaryCells[0],
-								myDx[0],
 								&myFineBoundaryWeights);
 		}
 

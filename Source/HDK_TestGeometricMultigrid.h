@@ -19,7 +19,7 @@ class GAS_API HDK_TestGeometricMultigrid : public GAS_SubSolver
     GET_DATA_FUNC_B("testConjugateGradient", TestConjugateGradient);
     GET_DATA_FUNC_B("useMultigridPreconditioner", UseMultigridPreconditioner);
     GET_DATA_FUNC_B("solveCGGeometrically", SolveCGGeometrically);
-    GET_DATA_FUNC_I("multigridLevels", MultigridLevels);
+
     GET_DATA_FUNC_F("solverTolerance", SolverTolerance);
     GET_DATA_FUNC_I("maxSolverIterations", MaxSolverIterations);
 

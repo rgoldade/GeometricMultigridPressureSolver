@@ -17,10 +17,9 @@ namespace HDK
 
     public:
 
-	GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
+	GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialCellLabels,
 					const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights,
 					const int mgLevels,
-					const SolveReal dx,
 					const bool useGaussSeidel);
 
 	void
@@ -30,7 +29,7 @@ namespace HDK
 
     private:
 
-	UT_Array<UT_VoxelArray<int>> myDomainCellLabels;
+	UT_Array<UT_VoxelArray<int>> myCellLabels;
 	UT_Array<UT_VoxelArray<StoreReal>> mySolutionGrids, myRHSGrids, myResidualGrids;
 
 	UT_Array<UT_Array<UT_Vector3I>> myBoundaryCells;
@@ -39,16 +38,13 @@ namespace HDK
 
 	std::array<UT_VoxelArray<StoreReal>, 3> myFineBoundaryWeights;
 
-	UT_Array<SolveReal> myDx;
-
 	const int myBoundarySmootherWidth;
 	const int myBoundarySmootherIterations;
 
 	const bool myUseGaussSeidel;
 
-	UT_VoxelArray<exint> myDirectSolverIndices;
-	Vector myCoarseRHSVector;
-	Eigen::SparseMatrix<SolveReal> sparseMatrix;
+	UT_VoxelArray<int> myDirectSolverIndices;
+	Eigen::SparseMatrix<SolveReal> mySparseMatrix;
 	Eigen::SimplicialCholesky<Eigen::SparseMatrix<SolveReal>> myCoarseSolver;
     };
 }

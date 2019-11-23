@@ -62,44 +62,41 @@ namespace HDK::GeometricMultigridOperators {
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
-                {
-		    for (; !vit.atEnd(); vit.advance())
-		    {
-			UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+		for (; !vit.atEnd(); vit.advance())
+		{
+		    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-			bool hasDirichletChild = false;
-			bool hasInteriorChild = false;
+		    bool hasDirichletChild = false;
+		    bool hasInteriorChild = false;
 
-			UT_Vector3I fineCell = cell * 2;
+		    UT_Vector3I fineCell = cell * 2;
 
-			for (int zOffset : {0,1})
-			    for (int yOffset : {0,1})
+		    for (int zOffset : {0,1})
+			for (int yOffset : {0,1})
+			{
+			    fineCellProbe[yOffset][zOffset].setIndex(fineCell[0], fineCell[1] + yOffset, fineCell[2] + zOffset);
+
+			    for (int xOffset : {0,1})
 			    {
-				fineCellProbe[yOffset][zOffset].setIndex(fineCell[0], fineCell[1] + yOffset, fineCell[2] + zOffset);
-
-				for (int xOffset : {0,1})
+				auto label = fineCellProbe[yOffset][zOffset].getValue(xOffset);
+				if (label == CellLabels::DIRICHLET_CELL)
 				{
-				    auto label = fineCellProbe[yOffset][zOffset].getValue(xOffset);
-				    if (label == CellLabels::DIRICHLET_CELL)
-				    {
-					hasDirichletChild = true;
-				    }
-				    else if (label == CellLabels::INTERIOR_CELL || 
-						label == CellLabels::BOUNDARY_CELL)
-					hasInteriorChild = true;
+				    hasDirichletChild = true;
 				}
+				else if (label == CellLabels::INTERIOR_CELL || 
+					    label == CellLabels::BOUNDARY_CELL)
+				    hasInteriorChild = true;
 			    }
+			}
 
-			destinationCellLabelProbe.setIndex(vit);
+		    destinationCellLabelProbe.setIndex(vit);
 
-			if (hasDirichletChild)
-			    destinationCellLabelProbe.setValue(CellLabels::DIRICHLET_CELL);
-			else if (hasInteriorChild)
-			    destinationCellLabelProbe.setValue(CellLabels::INTERIOR_CELL);
-			else
-			    destinationCellLabelProbe.setValue(CellLabels::EXTERIOR_CELL);
-		    }
+		    if (hasDirichletChild)
+			destinationCellLabelProbe.setValue(CellLabels::DIRICHLET_CELL);
+		    else if (hasInteriorChild)
+			destinationCellLabelProbe.setValue(CellLabels::INTERIOR_CELL);
+		    else
+			destinationCellLabelProbe.setValue(CellLabels::EXTERIOR_CELL);
 		}
 	    }
 	});
@@ -110,8 +107,8 @@ namespace HDK::GeometricMultigridOperators {
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setArray(&destinationCellLabels);
 
-	    UT_VoxelProbeCube<int> cellLabelProbe;
-	    cellLabelProbe.setConstPlusArray(&destinationCellLabels);
+	    UT_VoxelProbeCube<int> readCellLabelProbe;
+	    readCellLabelProbe.setConstPlusArray(&destinationCellLabels);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
@@ -124,11 +121,11 @@ namespace HDK::GeometricMultigridOperators {
 
 		if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
 		{
-		    for (vit.rewind(); !vit.atEnd(); vit.advance())
+		    for (; !vit.atEnd(); vit.advance())
 		    {
 			if (vit.getValue() == CellLabels::INTERIOR_CELL)
 			{
-			    cellLabelProbe.setIndexPlus(vit);
+			    readCellLabelProbe.setIndexPlus(vit);
 
 			    bool hasBoundary = false;
 			    for (int axis = 0; axis < 3 && !hasBoundary; ++axis)
@@ -182,9 +179,11 @@ namespace HDK::GeometricMultigridOperators {
 	visitedCells.size(sourceCellLabels.getVoxelRes()[0],
 			    sourceCellLabels.getVoxelRes()[1],
 			    sourceCellLabels.getVoxelRes()[2]);
+
 	visitedCells.constant(UNVISITED_CELL);
 
 	const int threadCount = UT_Thread::getNumProcessors();
+
 	UT_Array<UT_Array<UT_Vector3I>> parallelBoundaryCellList;
 	parallelBoundaryCellList.setSize(threadCount);
 
@@ -439,7 +438,6 @@ namespace HDK::GeometricMultigridOperators {
 	    fullBoundaryCellList.concat(parallelBoundaryCellList[thread]);
 
 	// Sort boundary cells to collect cells within a tile and then along the same axis.
-
 	auto boundaryCellCompare = [&sourceCellLabels](const UT_Vector3I &cellA, const UT_Vector3I &cellB)
 	{
 	    // Compare tile number first
@@ -493,7 +491,6 @@ namespace HDK::GeometricMultigridOperators {
 	    {
 		UT_VoxelArrayIterator<int> vit;
 		vit.setConstArray(&fineCellLabels);
-		UT_VoxelTileIterator<int> vitt;
 
 		for (int i = range.begin(); i != range.end(); ++i)
 		{
@@ -504,31 +501,27 @@ namespace HDK::GeometricMultigridOperators {
 		    if (boss->opInterrupt())
 			return;
 
-		    if (!vit.atEnd())
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
+			if (!dirichletTestPassed)
+			    return;
 
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			UT_Vector3I fineCell(vit.x(), vit.y(), vit.z());
+			UT_Vector3I coarseCell = fineCell / 2;
+
+			// If the fine cell is Dirichlet, it's coarse cell equivalent has to also be Dirichlet
+			if (vit.getValue() == CellLabels::DIRICHLET_CELL)
 			{
-			    if (!dirichletTestPassed)
-				return;
-
-			    UT_Vector3I fineCell(vitt.x(), vitt.y(), vitt.z());
-			    UT_Vector3I coarseCell = fineCell / 2;
-			    // If the fine cell is Dirichlet, it's coarse cell equivalent has to also be Dirichlet
-			    if (vitt.getValue() == CellLabels::DIRICHLET_CELL)
-			    {
-				if (coarseCellLabels(coarseCell) != CellLabels::DIRICHLET_CELL)
-				    dirichletTestPassed = false;
-			    }
-			    else if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
-					vitt.getValue() == CellLabels::BOUNDARY_CELL)
-			    {
-				// If the fine cell is interior, the coarse cell can be either
-				// interior or Dirichlet (if a sibling cell is Dirichlet).
-				if (coarseCellLabels(coarseCell) == CellLabels::EXTERIOR_CELL)
-				    dirichletTestPassed = false;
-			    }
+			    if (coarseCellLabels(coarseCell) != CellLabels::DIRICHLET_CELL)
+				dirichletTestPassed = false;
+			}
+			else if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+				    vit.getValue() == CellLabels::BOUNDARY_CELL)
+			{
+			    // If the fine cell is interior, the coarse cell can be either
+			    // interior or Dirichlet (if a sibling cell is Dirichlet).
+			    if (coarseCellLabels(coarseCell) == CellLabels::EXTERIOR_CELL)
+				dirichletTestPassed = false;
 			}
 		    }
 		}
@@ -543,7 +536,6 @@ namespace HDK::GeometricMultigridOperators {
 	    {
 		UT_VoxelArrayIterator<int> vit;
 		vit.setConstArray(&coarseCellLabels);
-		UT_VoxelTileIterator<int> vitt;
 
 		for (int i = range.begin(); i != range.end(); ++i)
 		{
@@ -553,54 +545,49 @@ namespace HDK::GeometricMultigridOperators {
 
 		    if (boss->opInterrupt())
 			return;
-
-		    if (!vit.atEnd())
+		    
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
+			if (!coarseningStrategyTestPassed)
+			return;
 
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			bool foundDirichletChild = false;
+			bool foundInteriorChild = false;
+			bool foundExteriorChild = false;
+
+			UT_Vector3I coarseCell(vit.x(), vit.y(), vit.z());
+
+			for (int childCellIndex = 0; childCellIndex < 8; ++childCellIndex)
 			{
-			    if (!coarseningStrategyTestPassed)
-				return;
+			    UT_Vector3I fineCell = getChildCell(coarseCell, childCellIndex);
 
-			    bool foundDirichletChild = false;
-			    bool foundInteriorChild = false;
-			    bool foundExteriorChild = false;
+			    auto fineLabel = fineCellLabels(fineCell);
 
-			    UT_Vector3I coarseCell(vitt.x(), vitt.y(), vitt.z());
+			    if (fineLabel == CellLabels::DIRICHLET_CELL)
+				foundDirichletChild = true;
+			    else if (fineLabel == CellLabels::INTERIOR_CELL ||
+					fineLabel == CellLabels::BOUNDARY_CELL)
+				foundInteriorChild = true;
+			    else if (fineLabel == CellLabels::EXTERIOR_CELL)
+				foundExteriorChild = true;
+			}
 
-			    for (int childCellIndex = 0; childCellIndex < 8; ++childCellIndex)
-			    {
-				UT_Vector3I fineCell = getChildCell(coarseCell, childCellIndex);
-
-				auto fineLabel = fineCellLabels(fineCell);
-
-				if (fineLabel == CellLabels::DIRICHLET_CELL)
-				    foundDirichletChild = true;
-				else if (fineLabel == CellLabels::INTERIOR_CELL ||
-					    fineLabel == CellLabels::BOUNDARY_CELL)
-				    foundInteriorChild = true;
-				else if (fineLabel == CellLabels::EXTERIOR_CELL)
-				    foundExteriorChild = true;
-			    }
-
-			    auto coarseLabel = coarseCellLabels(coarseCell);
-			    if (coarseLabel == CellLabels::DIRICHLET_CELL)
-			    {
-				if (!foundDirichletChild)
-				    coarseningStrategyTestPassed = false;
-			    }
-			    else if (coarseLabel == CellLabels::INTERIOR_CELL ||
-					coarseLabel == CellLabels::BOUNDARY_CELL)
-			    {
-				if (foundDirichletChild || !foundInteriorChild)
-				    coarseningStrategyTestPassed = false;
-			    }
-			    else if (coarseLabel == CellLabels::EXTERIOR_CELL)
-			    {
-				if (foundDirichletChild || foundInteriorChild || !foundExteriorChild)
-				    coarseningStrategyTestPassed = false;
-			    }
+			auto coarseLabel = coarseCellLabels(coarseCell);
+			if (coarseLabel == CellLabels::DIRICHLET_CELL)
+			{
+			    if (!foundDirichletChild)
+				coarseningStrategyTestPassed = false;
+			}
+			else if (coarseLabel == CellLabels::INTERIOR_CELL ||
+				    coarseLabel == CellLabels::BOUNDARY_CELL)
+			{
+			    if (foundDirichletChild || !foundInteriorChild)
+				coarseningStrategyTestPassed = false;
+			}
+			else if (coarseLabel == CellLabels::EXTERIOR_CELL)
+			{
+			    if (foundDirichletChild || foundInteriorChild || !foundExteriorChild)
+				coarseningStrategyTestPassed = false;
 			}
 		    }
 		}
@@ -610,83 +597,6 @@ namespace HDK::GeometricMultigridOperators {
 	}
 
 	return true;
-    }
-
-    bool
-    unitTestBoundaryCells(const UT_VoxelArray<int> &cellLabels)
-    {
-	UT_Interrupt *boss = UTgetInterrupt();
-
-	bool boundaryCellTestPassed = true;
-
-	UTparallelForEachNumber(cellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
-	{
-	    UT_VoxelArrayIterator<int> vit;
-	    vit.setConstArray(&cellLabels);
-	    UT_VoxelTileIterator<int> vitt;
-
-	    for (int i = range.begin(); i != range.end(); ++i)
-	    {
-		vit.myTileStart = i;
-		vit.myTileEnd = i + 1;
-		vit.rewind();
-
-		if (boss->opInterrupt())
-		    return;
-
-		if (!vit.atEnd())
-		{
-		    vitt.setTile(vit);
-
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-		    {
-			if (!boundaryCellTestPassed)
-			    return;
-
-			UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-
-			if (vitt.getValue() == CellLabels::INTERIOR_CELL)
-			{
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-
-				    if (!(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-					    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL))
-				    {
-					boundaryCellTestPassed = false;
-					return;
-				    }
-				}
-			}
-			else if (vitt.getValue() == CellLabels::BOUNDARY_CELL)
-			{
-			    bool hasNonSolvableCell = false;
-
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-
-				    if (!(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-					    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL))
-					    hasNonSolvableCell = true;
-				}
-
-			    if (!hasNonSolvableCell)
-			    {
-				boundaryCellTestPassed = false;
-				return;
-			    }
-			}
-
-		    }
-		}
-	    }
-	});
-
-	return boundaryCellTestPassed;
     }
 
     bool

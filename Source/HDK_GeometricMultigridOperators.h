@@ -14,23 +14,30 @@ namespace HDK::GeometricMultigridOperators
     // Forward declaration of templated functions
     //
 
-    // Interior smoothing operators. Handle boundaries in separate pass.
+    // Interior smoothing operators.
+
+    template<typename SolveReal, typename SourceFunctor, typename CellLabelFunctor, typename BoundaryWeightsFunctor>
+    std::pair<SolveReal, SolveReal>
+    computeLaplacian(const SourceFunctor &sourceFunctor,
+			const CellLabelFunctor &cellLabelsFunctor,
+			const BoundaryWeightsFunctor &boundaryWeightsFunctor,
+			bool applyBoundaryWeights);
 
     template<typename SolveReal, typename StoreReal>
     void
-    interiorJacobiPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
+    jacobiPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
+			    const UT_VoxelArray<StoreReal> &rhs,
+			    const UT_VoxelArray<int> &cellLabels,
+			    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights = nullptr);
+
+    template<typename SolveReal, typename StoreReal>
+    void
+    tiledGaussSeidelPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
 				    const UT_VoxelArray<StoreReal> &rhs,
 				    const UT_VoxelArray<int> &cellLabels,
-				    const SolveReal dx);
-
-    template<typename SolveReal, typename StoreReal>
-    void
-    interiorTiledGaussSeidelPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
-					    const UT_VoxelArray<StoreReal> &rhs,
-					    const UT_VoxelArray<int> &cellLabels,
-					    const SolveReal dx,
-					    const bool doSmoothOddTiles,
-					    const bool doSmoothForward);
+				    const bool doSmoothOddTiles,
+				    const bool doSmoothForward,
+				    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights = nullptr);
 
     // Jacobi smoothing along domain boundaries
 
@@ -40,7 +47,6 @@ namespace HDK::GeometricMultigridOperators
 				    const UT_VoxelArray<StoreReal> &rhs,
 				    const UT_VoxelArray<int> &cellLabels,
 				    const UT_Array<UT_Vector3I> &boundaryCells,
-				    const SolveReal dx,
 				    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights = nullptr);
 
     template<typename SolveReal, typename StoreReal>
@@ -48,7 +54,6 @@ namespace HDK::GeometricMultigridOperators
     applyPoissonMatrix(UT_VoxelArray<StoreReal> &destination,
 			const UT_VoxelArray<StoreReal> &source,
 			const UT_VoxelArray<int> &cellLabels,
-			const SolveReal dx,
 			const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights = nullptr);
 
     template<typename SolveReal, typename StoreReal>
@@ -57,7 +62,6 @@ namespace HDK::GeometricMultigridOperators
 			    const UT_VoxelArray<StoreReal> &solution,
 			    const UT_VoxelArray<StoreReal> &rhs,
 			    const UT_VoxelArray<int> &cellLabels,
-			    const SolveReal dx,
 			    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights = nullptr);
 
     template<typename SolveReal, typename StoreReal>
@@ -89,6 +93,11 @@ namespace HDK::GeometricMultigridOperators
 		const SolveReal scale,
 		const UT_VoxelArray<int> &cellLabels);
 
+    template<typename StoreReal>
+    void
+    scaleVector(UT_VoxelArray<StoreReal> &vector,
+		const UT_VoxelArray<int> &cellLabels);
+
     template<typename SolveReal, typename StoreReal>
     SolveReal
     dotProduct(const UT_VoxelArray<StoreReal> &vectorA,
@@ -99,7 +108,7 @@ namespace HDK::GeometricMultigridOperators
     SolveReal
     l2Norm(const UT_VoxelArray<StoreReal> &vector,
 	    const UT_VoxelArray<int> &cellLabels);
-    
+
     template<typename SolveReal, typename StoreReal>
     SolveReal
     squaredL2Norm(const UT_VoxelArray<StoreReal> &vector,
@@ -112,23 +121,23 @@ namespace HDK::GeometricMultigridOperators
 
     template <typename IsExteriorCellFunctor, typename IsInteriorCellFunctor, typename IsDirichletCellFunctor>
     std::pair<UT_Vector3I, int>
-    buildExpandedMGDomainLabels(UT_VoxelArray<int> &mgDomainCellLabels,
-				const UT_VoxelArray<int> &baseDomainCellLabels,
-				const IsExteriorCellFunctor &isExteriorCell,
-				const IsInteriorCellFunctor &isInteriorCell,
-				const IsDirichletCellFunctor &isDirichletCell);
+    buildExpandedCellLabels(UT_VoxelArray<int> &expandedCellLabels,
+			    const UT_VoxelArray<int> &baseCellLabels,
+			    const IsExteriorCellFunctor &isExteriorCell,
+			    const IsInteriorCellFunctor &isInteriorCell,
+			    const IsDirichletCellFunctor &isDirichletCell);
 
     template<typename StoreReal>
     void
-    buildExpandedBoundaryWeights(UT_VoxelArray<StoreReal> &mgBoundaryWeights,
+    buildExpandedBoundaryWeights(UT_VoxelArray<StoreReal> &expandedBoundaryWeights,
 				    const UT_VoxelArray<StoreReal> &baseBoundaryWeights,
-				    const UT_VoxelArray<int> &mgDomainCellLabels,
+				    const UT_VoxelArray<int> &expandedCellLabels,
 				    const UT_Vector3I &exteriorOffset,
 				    const int axis);
 
     template<typename StoreReal>
     void
-    setBoundaryDomainLabels(UT_VoxelArray<int> &domainCellLabels,
+    setBoundaryCellLabels(UT_VoxelArray<int> &cellLabels,
 			    const std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights);
 
     UT_VoxelArray<int>
@@ -158,43 +167,148 @@ namespace HDK::GeometricMultigridOperators
     bool unitTestCoarsening(const UT_VoxelArray<int> &coarseCellLabels,
 			    const UT_VoxelArray<int> &fineCellLabels);
 
-    bool unitTestBoundaryCells(const UT_VoxelArray<int> &cellLabels);
+    template<typename StoreReal>
+    bool unitTestBoundaryCells(const UT_VoxelArray<int> &cellLabels,
+				const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights = nullptr);
 
     bool unitTestExteriorCells(const UT_VoxelArray<int> &cellLabels);
 
     // Templated MG operator implementations
+    template<typename SolveReal, typename SourceFunctor, typename CellLabelFunctor, typename BoundaryWeightsFunctor>
+    std::pair<SolveReal, SolveReal>
+    computeLaplacian(const SourceFunctor &sourceFunctor,
+			const CellLabelFunctor &cellLabelsFunctor,
+			const BoundaryWeightsFunctor &boundaryWeightsFunctor,
+			bool applyBoundaryWeights)
+    {
+	using SIM::FieldUtils::cellToCellMap;
+
+	SolveReal laplacian = 0;
+	SolveReal diagonal = 0;
+
+	UT_Vector3I centerSample(0,0,0);
+
+	if (cellLabelsFunctor(centerSample) == CellLabels::INTERIOR_CELL)
+	{
+	    for (int axis : {0,1,2})
+		for (int direction : {0,1})
+		{
+		    UT_Vector3I offset = cellToCellMap(centerSample, axis, direction);
+		    assert(cellLabelsFunctor(offset) == CellLabels::INTERIOR_CELL ||
+			    cellLabelsFunctor(offset) == CellLabels::BOUNDARY_CELL);
+
+		    if (applyBoundaryWeights)
+			assert(boundaryWeightsFunctor(axis, direction) == 1);
+
+		    laplacian -= SolveReal(sourceFunctor(offset));
+		}
+
+	    diagonal = 6;
+	}
+	else
+	{
+	    assert(cellLabelsFunctor(centerSample) == CellLabels::BOUNDARY_CELL);
+
+	    for (int axis : {0,1,2})
+		for (int direction : {0,1})
+		{
+		    UT_Vector3I offset = cellToCellMap(centerSample, axis, direction);
+
+		    auto adjacentCellLabel = cellLabelsFunctor(offset);
+
+		    if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
+		    {
+			if (applyBoundaryWeights)
+			    assert(boundaryWeightsFunctor(axis, direction) == 1);
+
+			laplacian -= SolveReal(sourceFunctor(offset));
+			++diagonal;
+		    }
+		    else if (adjacentCellLabel == CellLabels::BOUNDARY_CELL)
+		    {
+			SolveReal sourceValue = sourceFunctor(offset);
+
+			if (applyBoundaryWeights)
+			{
+			    SolveReal weight = boundaryWeightsFunctor(axis, direction);
+			    laplacian -= weight * sourceValue;
+			    diagonal += weight;
+			}
+			else
+			{
+			    laplacian -= sourceValue;
+			    ++diagonal;
+			}
+		    }
+		    else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
+		    {
+			if (applyBoundaryWeights)
+			    diagonal += boundaryWeightsFunctor(axis, direction);
+			else
+			    ++diagonal;
+		    }
+		    else
+		    {
+			if (applyBoundaryWeights)
+			    assert(boundaryWeightsFunctor(axis, direction) == 0);
+		    }
+		}
+	}
+
+	laplacian += diagonal * SolveReal(sourceFunctor(centerSample));
+	return std::pair<SolveReal, SolveReal>(laplacian, diagonal);
+    }
 
     template<typename SolveReal, typename StoreReal>
     void
-    interiorJacobiPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
-				    const UT_VoxelArray<StoreReal> &rhs,
-				    const UT_VoxelArray<int> &cellLabels,
-				    const SolveReal dx)
+    jacobiPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
+			    const UT_VoxelArray<StoreReal> &rhs,
+			    const UT_VoxelArray<int> &cellLabels,
+			    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights)
     {
+	using SIM::FieldUtils::cellToFaceMap;
+
 	assert(solution.getVoxelRes() == rhs.getVoxelRes() &&
 		rhs.getVoxelRes() == cellLabels.getVoxelRes());
 
+	if (boundaryWeights != nullptr)
+	{
+	    assert( (*boundaryWeights)[0].getVoxelRes()[0] - 1 == solution.getVoxelRes()[0] &&
+		    (*boundaryWeights)[0].getVoxelRes()[1]     == solution.getVoxelRes()[1] &&
+		    (*boundaryWeights)[0].getVoxelRes()[2]     == solution.getVoxelRes()[2] &&
+
+		    (*boundaryWeights)[1].getVoxelRes()[0]     == solution.getVoxelRes()[0] &&
+		    (*boundaryWeights)[1].getVoxelRes()[1] - 1 == solution.getVoxelRes()[1] &&
+		    (*boundaryWeights)[1].getVoxelRes()[2]     == solution.getVoxelRes()[2] &&
+
+		    (*boundaryWeights)[2].getVoxelRes()[0]     == solution.getVoxelRes()[0] &&
+		    (*boundaryWeights)[2].getVoxelRes()[1]     == solution.getVoxelRes()[1] &&
+		    (*boundaryWeights)[2].getVoxelRes()[2] - 1 == solution.getVoxelRes()[2]);
+	}
+
 	UT_VoxelArray<StoreReal> tempSolution = solution;
 
-	// TODO: factor dx terms out
-	const SolveReal gridScalar = 1. / (dx * dx);
 	constexpr SolveReal dampedWeight = 2. / 3.;
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
         UTparallelForEachNumber(cellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
-	    UT_VoxelArrayIterator<int> vit;
-	    vit.setConstArray(&cellLabels);
-
+	    // Build probes
 	    UT_VoxelProbeCube<StoreReal> tempSolutionProbe;
 	    tempSolutionProbe.setConstPlusArray(&tempSolution);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> solutionProbe;
+	    UT_VoxelProbeCube<int> cellLabelsProbe;
+	    cellLabelsProbe.setConstPlusArray(&cellLabels);
+
+	    UT_VoxelProbe<StoreReal, true /* read */, true /* write */, true /* test for writes */> solutionProbe;
 	    solutionProbe.setArray(&solution);
 
-	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> rhsProbe;
+	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false /* no test for writes */> rhsProbe;
 	    rhsProbe.setConstArray(&rhs);
+
+	    UT_VoxelArrayIterator<int> vit;
+	    vit.setConstArray(&cellLabels);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
@@ -205,32 +319,46 @@ namespace HDK::GeometricMultigridOperators
 		if (boss->opInterrupt())
 		    break;
 
-		// Ignore boundary cells so we don't have to handle irregular stencils.
-		// We can clean this up during boundary smoothing
-		if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		if (!vit.isTileConstant() ||
+		    vit.getValue() == CellLabels::INTERIOR_CELL ||
+		    vit.getValue() == CellLabels::BOUNDARY_CELL)
 		{
 		    for (; !vit.atEnd(); vit.advance())
 		    {
-			if (vit.getValue() == CellLabels::INTERIOR_CELL)
+			auto cellLabel = vit.getValue();
+			if (cellLabel == CellLabels::INTERIOR_CELL ||
+			    cellLabel == CellLabels::BOUNDARY_CELL)
 			{
-			    tempSolutionProbe.setIndexPlus(vit);
-			    solutionProbe.setIndex(vit);
-			    rhsProbe.setIndex(vit);
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-			    SolveReal laplacian = 0;
+			    tempSolutionProbe.setIndexPlus(cell[0], cell[1], cell[2]);
+			    cellLabelsProbe.setIndexPlus(cell[0], cell[1], cell[2]);
 
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I offset(0,0,0);
-				    offset[axis] += direction == 0 ? -1 : 1;
-				    laplacian -= tempSolutionProbe.getValue(offset[0], offset[1], offset[2]);
-				}
+			    auto sourceFunctor = [&](const UT_Vector3I &offset) { return tempSolutionProbe.getValue(offset); };
+			    auto cellLabelFunctor = [&](const UT_Vector3I &offset) { return cellLabelsProbe.getValue(offset); };
 
-			    laplacian += 6. * tempSolutionProbe.getValue(0, 0, 0);
-			    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
-			    residual /= (6. * gridScalar);
-			    solutionProbe.setValue(tempSolutionProbe.getValue(0, 0, 0) + dampedWeight * residual);
+			    auto boundaryWeightsFunctor = [&](const int axis, const int direction)
+			    {
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				return (*boundaryWeights)[axis](face);
+			    };
+
+			    std::pair<SolveReal, SolveReal> laplacianResults = computeLaplacian<SolveReal>(sourceFunctor, cellLabelFunctor, boundaryWeightsFunctor, boundaryWeights != nullptr);
+
+			    SolveReal laplacian = laplacianResults.first;
+			    SolveReal diagonal = laplacianResults.second;
+
+			    if (cellLabel == CellLabels::INTERIOR_CELL)
+				assert(diagonal == 6.);
+			    else
+				assert(diagonal > 0);
+
+			    rhsProbe.setIndex(cell[0], cell[1], cell[2]);
+			    SolveReal residual = SolveReal(rhsProbe.getValue()) - laplacian;
+			    residual /= diagonal;
+
+			    solutionProbe.setIndex(cell[0], cell[1], cell[2]);
+			    solutionProbe.setValue(solutionProbe.getValue() + dampedWeight * residual);
 			}
 		    }
 		}	
@@ -240,18 +368,32 @@ namespace HDK::GeometricMultigridOperators
 
     template<typename SolveReal, typename StoreReal>
     void
-    interiorTiledGaussSeidelPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
-					    const UT_VoxelArray<StoreReal> &rhs,
-					    const UT_VoxelArray<int> &cellLabels,
-					    const SolveReal dx,
-					    const bool doSmoothOddTiles,
-					    const bool doSmoothForward)
+    tiledGaussSeidelPoissonSmoother(UT_VoxelArray<StoreReal> &solution,
+				    const UT_VoxelArray<StoreReal> &rhs,
+				    const UT_VoxelArray<int> &cellLabels,
+				    const bool doSmoothOddTiles,
+				    const bool doSmoothForward,
+				    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights)
     {
+	using SIM::FieldUtils::cellToFaceMap;
+
 	assert(solution.getVoxelRes() == rhs.getVoxelRes() &&
 		rhs.getVoxelRes() == cellLabels.getVoxelRes());
 
-	const SolveReal gridScalar = 1. / (dx * dx);
-	const SolveReal inv_diagonal = 1. / (6. * gridScalar);
+	if (boundaryWeights != nullptr)
+	{
+	    assert( (*boundaryWeights)[0].getVoxelRes()[0] - 1 == solution.getVoxelRes()[0] &&
+		    (*boundaryWeights)[0].getVoxelRes()[1]     == solution.getVoxelRes()[1] &&
+		    (*boundaryWeights)[0].getVoxelRes()[2]     == solution.getVoxelRes()[2] &&
+
+		    (*boundaryWeights)[1].getVoxelRes()[0]     == solution.getVoxelRes()[0] &&
+		    (*boundaryWeights)[1].getVoxelRes()[1] - 1 == solution.getVoxelRes()[1] &&
+		    (*boundaryWeights)[1].getVoxelRes()[2]     == solution.getVoxelRes()[2] &&
+
+		    (*boundaryWeights)[2].getVoxelRes()[0]     == solution.getVoxelRes()[0] &&
+		    (*boundaryWeights)[2].getVoxelRes()[1]     == solution.getVoxelRes()[1] &&
+		    (*boundaryWeights)[2].getVoxelRes()[2] - 1 == solution.getVoxelRes()[2]);
+	}
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -272,12 +414,12 @@ namespace HDK::GeometricMultigridOperators
 	    // Set center probes
 	    solutionProbes[1][1].setArray(&solution, -1, 1);
 
-	    UT_VoxelProbe<int, true /* read */, false /* no write */, false> cellLabelProbe;
-	    cellLabelProbe.setConstArray(&cellLabels);
+	    UT_VoxelProbeCube<int> cellLabelsProbe;
+	    cellLabelsProbe.setConstPlusArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> rhsProbe;
+	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false /* no test for writes */> rhsProbe;
+
 	    rhsProbe.setConstArray(&rhs);
-
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
                 vit.myTileStart = i;
@@ -287,7 +429,9 @@ namespace HDK::GeometricMultigridOperators
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
+		if (!vit.isTileConstant() ||
+		    vit.getValue() == CellLabels::INTERIOR_CELL ||
+		    vit.getValue() == CellLabels::BOUNDARY_CELL)
 		{
 		    // Filter out odd or even tiles
 		    int tileNumber = vit.getLinearTileNum();
@@ -295,7 +439,7 @@ namespace HDK::GeometricMultigridOperators
 		    cellLabels.linearTileToXYZ(tileNumber, tileIndex[0], tileIndex[1], tileIndex[2]);
 
 		    int oddCount = 0;
-		    for (int axis : {0,1,2})
+		    for (int axis : {0, 1, 2})
 			oddCount += tileIndex[axis];
 
 		    bool isTileOdd = (oddCount % 2 != 0);
@@ -308,22 +452,13 @@ namespace HDK::GeometricMultigridOperators
 
 		    auto gsSmoother = [&](const UT_Vector3I& cell)
 		    {
-			cellLabelProbe.setIndex(cell[0], cell[1], cell[2]);
-			if (cellLabelProbe.getValue() == CellLabels::INTERIOR_CELL)
+			cellLabelsProbe.setIndexPlus(cell[0], cell[1], cell[2]);
+
+			auto cellLabel = cellLabelsProbe.getValue(UT_Vector3I(0,0,0));
+
+			if (cellLabel == CellLabels::INTERIOR_CELL ||
+			    cellLabel == CellLabels::BOUNDARY_CELL)
 			{
-#if !defined(NDEBUG)
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-				    
-				    // Geometric multigrid uses padding at the boundary limits so
-				    // we should never end up out of bounds.
-				    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < solution.getVoxelRes()[axis]);
-				    assert(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-					    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
-				}
-#endif
 			    // Set probe index for center first since it needs to write out the cache
 			    solutionProbes[1][1].setIndex(cell[0], cell[1], cell[2]);
 
@@ -332,23 +467,30 @@ namespace HDK::GeometricMultigridOperators
 			    for (int zOffset : {-1,1})
 				solutionProbes[1][zOffset + 1].setIndex(cell[0], cell[1], cell[2] + zOffset);
 
-			    // Compute laplacian
-			    SolveReal laplacian = 0;
+			    auto sourceFunctor = [&](const UT_Vector3I &offset) { return solutionProbes[offset[1] + 1][offset[2] + 1].getValue(offset[0]); };
+			    auto cellLabelFunctor = [&](const UT_Vector3I &offset) { return cellLabelsProbe.getValue(offset); };
 
-			    for (int xOffset : {-1,1})
-				laplacian -= solutionProbes[1][1].getValue(xOffset);
+			    auto boundaryWeightsFunctor = [&](const int axis, const int direction)
+			    {
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				return (*boundaryWeights)[axis](face);
+			    };
 
-			    for (int yOffset : {-1,1})
-				laplacian -= solutionProbes[yOffset + 1][1].getValue();
+			    std::pair<SolveReal, SolveReal> laplacianResults = computeLaplacian<SolveReal>(sourceFunctor, cellLabelFunctor, boundaryWeightsFunctor, boundaryWeights != nullptr);
 
-			    for (int zOffset : {-1,1})
-				laplacian -= solutionProbes[1][zOffset + 1].getValue();
+			    SolveReal laplacian = laplacianResults.first;
+			    SolveReal diagonal = laplacianResults.second;
+
+			    if (cellLabel == CellLabels::INTERIOR_CELL)
+				assert(diagonal == 6.);
+			    else
+				assert(diagonal > 0);
 
 			    rhsProbe.setIndex(cell[0], cell[1], cell[2]);
-			    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
-			    residual *= inv_diagonal;
+			    SolveReal residual = SolveReal(rhsProbe.getValue()) - laplacian;
+			    residual /= diagonal;
 
-			    solutionProbes[1][1].setValue(residual);
+			    solutionProbes[1][1].setValue(solutionProbes[1][1].getValue(0) + residual);
 			}
 		    };
 
@@ -385,9 +527,10 @@ namespace HDK::GeometricMultigridOperators
 				    const UT_VoxelArray<StoreReal> &rhs,
 				    const UT_VoxelArray<int> &cellLabels,
 				    const UT_Array<UT_Vector3I> &boundaryCells,
-				    const SolveReal dx,
 				    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights)
     {
+	using SIM::FieldUtils::cellToFaceMap;
+
 	assert(solution.getVoxelRes() == rhs.getVoxelRes() &&
 		rhs.getVoxelRes() == cellLabels.getVoxelRes());
 
@@ -408,8 +551,6 @@ namespace HDK::GeometricMultigridOperators
 
 	const exint listSize = boundaryCells.size();
 
-	const SolveReal gridScalar = 1. / (SolveReal(dx) * SolveReal(dx));
-
 	constexpr SolveReal dampedWeight = 2. / 3.;
 
 	UT_Array<StoreReal> tempSolution;
@@ -423,121 +564,39 @@ namespace HDK::GeometricMultigridOperators
 	    if (boss->opInterrupt())
 		return;
 
-	    UT_VoxelProbeCube<StoreReal> solutionProbe;
-	    solutionProbe.setConstPlusArray(&solution);
-
-	    UT_VoxelProbe<StoreReal, true /* read */, false /* no write */, false> rhsProbe;
-	    rhsProbe.setConstArray(&rhs);
-
 	    for (exint cellIndex = range.begin(); cellIndex != range.end(); ++cellIndex)
 	    {
 		UT_Vector3I cell = boundaryCells[cellIndex];
 
-		solutionProbe.setIndexPlus(cell[0], cell[1], cell[2]);
-		rhsProbe.setIndex(cell[0], cell[1], cell[2]);
+		auto sourceFunctor = [&](const UT_Vector3I &offset) { return solution(cell + offset); };
+		auto cellLabelFunctor = [&](const UT_Vector3I &offset) { return cellLabels(cell + offset); };
 
-		if (cellLabels(cell) == CellLabels::INTERIOR_CELL)
+		auto boundaryWeightsFunctor = [&](const int axis, const int direction)
 		{
-		    SolveReal laplacian = 0;
+		    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+		    return (*boundaryWeights)[axis](face);
+		};
 
-		    for (int axis : {0,1,2})
-			for (int direction : {0,1})
-			{
+		std::pair<SolveReal, SolveReal> laplacianResults = computeLaplacian<SolveReal>(sourceFunctor, cellLabelFunctor, boundaryWeightsFunctor, boundaryWeights != nullptr);
+
+		SolveReal laplacian = laplacianResults.first;
+		SolveReal diagonal = laplacianResults.second;
+
 #if !defined(NDEBUG)
-			    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-
-			    // Geometric multigrid uses padding at the boundary limits so
-			    // we should never end up out of bounds.
-			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < solution.getVoxelRes()[axis]);
-			    assert(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-				    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
-#endif
-
-			    UT_Vector3I offset(0,0,0);
-			    offset[axis] += direction == 0 ? -1 : 1;
-			    laplacian -= solutionProbe.getValue(offset[0], offset[1], offset[2]);
-			}
-
-		    laplacian += 6. * solutionProbe.getValue(0,0,0);
-		    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
-		    residual /= (6. * gridScalar);
-		    tempSolution[cellIndex] = SolveReal(solutionProbe.getValue(0,0,0)) + dampedWeight * residual;
-		}
+		auto cellLabel = cellLabels(cell);
+		if (cellLabel == CellLabels::INTERIOR_CELL)
+		    assert(diagonal == 6.);
 		else
 		{
-		    assert(cellLabels(cell) == CellLabels::BOUNDARY_CELL);
-
-		    SolveReal laplacian = 0;
-		    SolveReal diagonal = 0;
-
-		    for (int axis : {0,1,2})
-			for (int direction : {0,1})
-			{
-			    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-
-			    // Geometric multigrid uses padding at the boundary limits so
-			    // we should never end up out of bounds.
-			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < solution.getVoxelRes()[axis]);
-
-			    if (cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL)
-			    {
-				UT_Vector3I offset(0,0,0);
-				offset[axis] += direction == 0 ? -1 : 1;
-				SolveReal localValue = solutionProbe.getValue(offset[0], offset[1], offset[2]);
-
-				if (boundaryWeights != nullptr)
-				{
-				    UT_Vector3I face = SIM::FieldUtils::cellToFaceMap(cell, axis, direction);
-				    assert((*boundaryWeights)[axis](face) == 1);
-				}
-
-				laplacian -= localValue;
-				++diagonal;
-			    }
-			    else if (cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL)
-			    {
-				UT_Vector3I offset(0,0,0);
-				offset[axis] += direction == 0 ? -1 : 1;
-				SolveReal localValue = solutionProbe.getValue(offset[0], offset[1], offset[2]);
-
-				if (boundaryWeights != nullptr)
-				{
-				    UT_Vector3I face = SIM::FieldUtils::cellToFaceMap(cell, axis, direction);
-
-					SolveReal weight = SolveReal((*boundaryWeights)[axis](face));
-				    laplacian -= weight * localValue;
-				    diagonal += weight;
-				}
-				else
-				{
-				    laplacian -= localValue;
-				    ++diagonal;
-				}
-			    }
-			    else if (cellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL)
-			    {
-				if (boundaryWeights != nullptr)
-				{
-				    UT_Vector3I face = SIM::FieldUtils::cellToFaceMap(cell, axis, direction);
-				    diagonal += (*boundaryWeights)[axis](face);
-				}
-				else ++diagonal;
-			    }
-			    else if (cellLabels(adjacentCell) == CellLabels::EXTERIOR_CELL)
-			    {
-				if (boundaryWeights != nullptr)
-				{
-				    UT_Vector3I face = SIM::FieldUtils::cellToFaceMap(cell, axis, direction);
-				    assert((*boundaryWeights)[axis](face) == 0);
-				}
-			    }
-			}
-
-		    laplacian += diagonal * solutionProbe.getValue(0,0,0);
-		    SolveReal residual = SolveReal(rhsProbe.getValue()) - gridScalar * laplacian;
-		    residual /= (diagonal * gridScalar);
-		    tempSolution[cellIndex] = SolveReal(solutionProbe.getValue(0,0,0)) + dampedWeight * residual;
+		    assert(cellLabel == CellLabels::BOUNDARY_CELL);
+		    assert(diagonal > 0);
 		}
+#endif
+
+		SolveReal residual = SolveReal(rhs(cell)) - laplacian;
+		residual /= diagonal;
+
+		tempSolution[cellIndex] = SolveReal(solution(cell)) + dampedWeight * residual;
 	    }
 	});
 
@@ -547,19 +606,14 @@ namespace HDK::GeometricMultigridOperators
 	    if (boss->opInterrupt())
 		return;
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> solutionProbe;
-	    solutionProbe.setArray(&solution);
-
 	    for (exint cellIndex = range.begin(); cellIndex != range.end(); ++cellIndex)
 	    {
 		UT_Vector3I cell = boundaryCells[cellIndex];
 
-		solutionProbe.setIndex(cell[0], cell[1], cell[2]);
-
 		// The tile that the cell falls into in the solution grid MUST be uncompressed
 		assert(!solution.getLinearTile(solution.indexToLinearTile(cell[0], cell[1], cell[2]))->isConstant());
 
-		solutionProbe.setValue(tempSolution[cellIndex]);
+		solution.setValue(cell, tempSolution[cellIndex]);
 	    }
 	});
     }
@@ -569,9 +623,10 @@ namespace HDK::GeometricMultigridOperators
     applyPoissonMatrix(UT_VoxelArray<StoreReal> &destination,
 			const UT_VoxelArray<StoreReal> &source,
 			const UT_VoxelArray<int> &cellLabels,
-			const SolveReal dx,
 			const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights)
     {
+	using SIM::FieldUtils::cellToFaceMap;
+
 	assert(destination.getVoxelRes() == source.getVoxelRes() &&
 		source.getVoxelRes() == cellLabels.getVoxelRes());
 
@@ -590,24 +645,23 @@ namespace HDK::GeometricMultigridOperators
 		    (*boundaryWeights)[2].getVoxelRes()[2] - 1 == source.getVoxelRes()[2]);
 	}
 
-	SolveReal gridScalar = 1. / (dx * dx);
-
 	UT_Interrupt *boss = UTgetInterrupt();
 
 	UTparallelForEachNumber(cellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
-	    UT_VoxelArrayIterator<int> vit;
-	    vit.setConstArray(&cellLabels);
-
+	    // Build probes
 	    UT_VoxelProbeCube<StoreReal> sourceProbe;
 	    sourceProbe.setConstPlusArray(&source);
 
-	    UT_VoxelProbeCube<int> cellLabelProbe;
-	    cellLabelProbe.setConstPlusArray(&cellLabels);
+	    UT_VoxelProbeCube<int> cellLabelsProbe;
+	    cellLabelsProbe.setConstPlusArray(&cellLabels);
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> destinationProbe;
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */ > destinationProbe;
 	    destinationProbe.setArray(&destination);
 
+	    UT_VoxelArrayIterator<int> vit;
+	    vit.setConstArray(&cellLabels);
+	    
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
                 vit.myTileStart = i;
@@ -621,88 +675,37 @@ namespace HDK::GeometricMultigridOperators
 		    vit.getValue() == CellLabels::INTERIOR_CELL ||
 		    vit.getValue() == CellLabels::BOUNDARY_CELL)
 		{
-		    for (vit.rewind(); !vit.atEnd(); vit.advance())
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			if (vit.getValue() == CellLabels::INTERIOR_CELL)
+			auto cellLabel = vit.getValue();
+			if (cellLabel == CellLabels::INTERIOR_CELL ||
+			    cellLabel == CellLabels::BOUNDARY_CELL)
 			{
-			    sourceProbe.setIndexPlus(vit);
-			    destinationProbe.setIndex(vit);
-
-			    SolveReal laplacian = 0;
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-#if !defined(NDEBUG)
-				    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-				    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < destination.getVoxelRes()[axis]);
-				    assert(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
-					    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
-#endif
-
-				    UT_Vector3I offset(0,0,0);
-				    offset[axis] += direction == 0 ? -1 : 1;
-				    laplacian -= sourceProbe.getValue(offset[0], offset[1], offset[2]);
-				}
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 			    
-			    laplacian += SolveReal(6.) * SolveReal(sourceProbe.getValue(0,0,0));
-			    laplacian *= gridScalar;
-			    destinationProbe.setValue(laplacian);
-			}
-			else if (vit.getValue() == CellLabels::BOUNDARY_CELL)
-			{
-			    sourceProbe.setIndexPlus(vit);
-			    destinationProbe.setIndex(vit);
-			    cellLabelProbe.setIndexPlus(vit);
+			    sourceProbe.setIndexPlus(cell[0], cell[1], cell[2]);
+			    cellLabelsProbe.setIndexPlus(cell[0], cell[1], cell[2]);
 
-			    SolveReal laplacian = 0;
-			    SolveReal diagonal = 0;
+			    auto sourceFunctor = [&](const UT_Vector3I &offset) { return sourceProbe.getValue(offset); };
+			    auto cellLabelFunctor = [&](const UT_Vector3I &offset) { return cellLabelsProbe.getValue(offset); };
 
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I offset(0,0,0);
-				    offset[axis] += direction == 0 ? -1 : 1;
+			    auto boundaryWeightsFunctor = [&](const int axis, const int direction)
+			    {
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				return (*boundaryWeights)[axis](face);
+			    };
 
-#if !defined(NDEBUG)
-				    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
-				    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < destination.getVoxelRes()[axis]);
-#endif
+			    std::pair<SolveReal, SolveReal> laplacianResults = computeLaplacian<SolveReal>(sourceFunctor, cellLabelFunctor, boundaryWeightsFunctor, boundaryWeights != nullptr);
 
-				    auto adjacentCellLabel = cellLabelProbe.getValue(offset[0], offset[1], offset[2]);
+			    SolveReal laplacian = laplacianResults.first;
+			    SolveReal diagonal = laplacianResults.second;
 
-				    if (adjacentCellLabel == CellLabels::INTERIOR_CELL ||
-					adjacentCellLabel == CellLabels::BOUNDARY_CELL)
-				    {
-					if (boundaryWeights != nullptr)
-					{
-					    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-					    UT_Vector3I face = SIM::FieldUtils::cellToFaceMap(cell, axis, direction);
+			    if (cellLabel == CellLabels::INTERIOR_CELL)
+				assert(diagonal == 6.);
+			    else
+				assert(diagonal > 0);
 
-					    laplacian -= SolveReal((*boundaryWeights)[axis](face)) * SolveReal(sourceProbe.getValue(offset[0], offset[1], offset[2]));
-					    diagonal += (*boundaryWeights)[axis](face);
-					}
-					else
-					{
-					    laplacian -= sourceProbe.getValue(offset[0], offset[1], offset[2]);
-					    ++diagonal;
-					}
-				    }
-				    else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
-				    {
-					if (boundaryWeights != nullptr)
-					{
-					    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
-					    UT_Vector3I face = SIM::FieldUtils::cellToFaceMap(cell, axis, direction);
-					    diagonal += (*boundaryWeights)[axis](face);
-					}
-					else ++diagonal;
-				    }
-				}
-
-			    laplacian += diagonal * SolveReal(sourceProbe.getValue(0,0,0));
-			    laplacian *= gridScalar;
+			    destinationProbe.setIndex(cell[0], cell[1], cell[2]);
 			    destinationProbe.setValue(laplacian);
 			}
 		    }
@@ -717,7 +720,6 @@ namespace HDK::GeometricMultigridOperators
 			    const UT_VoxelArray<StoreReal> &solution,
 			    const UT_VoxelArray<StoreReal> &rhs,
 			    const UT_VoxelArray<int> &cellLabels,
-			    const SolveReal dx,
 			    const std::array<UT_VoxelArray<StoreReal>, 3>  *boundaryWeights)
     {
 	assert(residual.getVoxelRes() == solution.getVoxelRes() &&
@@ -726,11 +728,10 @@ namespace HDK::GeometricMultigridOperators
 
 	residual.constant(0);
 
-	applyPoissonMatrix<SolveReal>(residual, solution, cellLabels, dx, boundaryWeights);
+	applyPoissonMatrix<SolveReal>(residual, solution, cellLabels, boundaryWeights);
 	addVectors<SolveReal>(residual, rhs, residual, -1, cellLabels);
     }
 
-    // TODO: explore a way to run a probe over restriction/prolongation operators
     template<typename SolveReal, typename StoreReal>
     void
     downsample(UT_VoxelArray<StoreReal> &destination,
@@ -771,9 +772,6 @@ namespace HDK::GeometricMultigridOperators
 	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
-	    UT_VoxelProbe<int, true /* read */, false /* no write */, false> destinationCellLabelProbe;
-	    destinationCellLabelProbe.setConstArray(&destinationCellLabels);
-
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
                 vit.myTileStart = i;
@@ -787,52 +785,51 @@ namespace HDK::GeometricMultigridOperators
 		    vit.getValue() == CellLabels::INTERIOR_CELL ||
 		    vit.getValue() == CellLabels::BOUNDARY_CELL)
 		{
-		    UT_Vector3I tileStart, tileEnd;
-		    vit.getTileVoxels(tileStart,tileEnd);
 
-		    UT_Vector3I cell;
-		    for (cell[2] = tileStart[2]; cell[2] < tileEnd[2]; ++cell[2])
-			for (cell[1] = tileStart[1]; cell[1] < tileEnd[1]; ++cell[1])
-			    for (cell[0] = tileStart[0]; cell[0] < tileEnd[0]; ++cell[0])
-			    {
-				destinationCellLabelProbe.setIndex(cell[0], cell[1], cell[2]);
+		    for (; !vit.atEnd(); vit.advance())
+		    {
+			auto destinationLabel = vit.getValue();
+			
+			if (destinationLabel == CellLabels::INTERIOR_CELL ||
+			    destinationLabel == CellLabels::BOUNDARY_CELL)
+			{
+			    SolveReal sampleValue = 0;
 
-				CellLabels localCellLabel = CellLabels(destinationCellLabelProbe.getValue());
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-				if (localCellLabel == CellLabels::INTERIOR_CELL ||
-				    localCellLabel == CellLabels::BOUNDARY_CELL)
+			    UT_Vector3I startCell = 2 * cell - UT_Vector3I(1);
+
+			    for (int zOffset = 0; zOffset < 4; ++zOffset)
+				for (int yOffset = 0; yOffset < 4; ++yOffset)
 				{
-				    SolveReal sampleValue = 0;
+				    sourceProbes[yOffset][zOffset].setIndex(startCell[0], startCell[1] + yOffset, startCell[2] + zOffset);
+				    
+				    for (int xOffset = 0; xOffset < 4; ++xOffset)
+				    {
+					UT_Vector3I sampleCell = startCell + UT_Vector3I(xOffset, yOffset, zOffset);
 
-				    UT_Vector3I startCell = 2 * cell - UT_Vector3I(1);
+					assert(sampleCell[0] >= 0 && sampleCell[1] >= 0 && sampleCell[2] >= 0 &&
+						sampleCell[0] < source.getVoxelRes()[0] &&
+						sampleCell[1] < source.getVoxelRes()[1] &&
+						sampleCell[2] < source.getVoxelRes()[2]);
 
-				    for (int zOffset = 0; zOffset < 4; ++zOffset)
-					for (int yOffset = 0; yOffset < 4; ++yOffset)
-					{
-					    sourceProbes[yOffset][zOffset].setIndex(startCell[0], startCell[1] + yOffset, startCell[2] + zOffset);
-
-					    for (int xOffset = 0; xOffset < 4; ++xOffset)
-					    {
-						sampleValue += restrictionWeights[xOffset] *
-								restrictionWeights[yOffset] *
-								restrictionWeights[zOffset] *
-								SolveReal(sourceProbes[yOffset][zOffset].getValue(xOffset));
+					sampleValue += restrictionWeights[xOffset] *
+							restrictionWeights[yOffset] *
+							restrictionWeights[zOffset] *
+							SolveReal(sourceProbes[yOffset][zOffset].getValue(xOffset));
 
 #if !defined(NDEBUG)
-						if (!(sourceCellLabels(startCell + UT_Vector3I(xOffset, yOffset, zOffset)) == INTERIOR_CELL ||
-							sourceCellLabels(startCell + UT_Vector3I(xOffset, yOffset, zOffset)) == BOUNDARY_CELL))
-							    assert(source(startCell + UT_Vector3I(xOffset, yOffset, zOffset)) == 0);
+					auto sourceLabel = sourceCellLabels(sampleCell);
+					if (sourceLabel != CellLabels::INTERIOR_CELL && sourceLabel != CellLabels::BOUNDARY_CELL)
+					    assert(sourceProbes[yOffset][zOffset].getValue(xOffset) == 0);
 #endif
-
-					    }
-					}
-
-				    destinationProbe.setIndex(cell[0], cell[1], cell[2]);
-				    destinationProbe.setValue(sampleValue);
+				    }
 				}
-			    }
 
-
+			    destinationProbe.setIndex(cell[0], cell[1], cell[2]);
+			    destinationProbe.setValue(sampleValue);
+			}
+		    }
 		}
 	    }
 	});
@@ -910,9 +907,6 @@ namespace HDK::GeometricMultigridOperators
 	    UT_VoxelProbe<StoreReal, true /* read */, true /* no write */, true /* test for write */> destinationProbe;
 	    destinationProbe.setArray(&destination);
 
-	    UT_VoxelProbe<int, true /* read */, false /* no write */, false> destinationCellLabelProbe;
-	    destinationCellLabelProbe.setConstArray(&destinationCellLabels);
-
 	    for (int i = range.begin(); i != range.end(); ++i)
             {
                 vit.myTileStart = i;
@@ -926,53 +920,101 @@ namespace HDK::GeometricMultigridOperators
 		    vit.getValue() == CellLabels::INTERIOR_CELL ||
 		    vit.getValue() == CellLabels::BOUNDARY_CELL)
 		{
-		    UT_Vector3I tileStart, tileEnd;
-		    vit.getTileVoxels(tileStart,tileEnd);
+		    for (; !vit.atEnd(); vit.advance())
+		    {
+			auto destinationLabel = vit.getValue();
+			
+			if (destinationLabel == CellLabels::INTERIOR_CELL ||
+			    destinationLabel == CellLabels::BOUNDARY_CELL)
+			{
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			    
+			    UT_Vector3T<SolveReal> samplePoint = .5 * (UT_Vector3T<SolveReal>(cell) + UT_Vector3T<SolveReal>(.5)) - UT_Vector3T<SolveReal>(.5);
 
-		    UT_Vector3I cell;
-		    for (cell[2] = tileStart[2]; cell[2] < tileEnd[2]; ++cell[2])
-			for (cell[1] = tileStart[1]; cell[1] < tileEnd[1]; ++cell[1])
-			    for (cell[0] = tileStart[0]; cell[0] < tileEnd[0]; ++cell[0])
-			    {
-				destinationCellLabelProbe.setIndex(cell[0], cell[1], cell[2]);
+			    UT_Vector3I startCell = UT_Vector3I(samplePoint);
 
-				CellLabels localCellLabel = CellLabels(destinationCellLabelProbe.getValue());
+			    UT_Vector3T<SolveReal> interpWeight = samplePoint - UT_Vector3T<SolveReal>(startCell);
 
-				if (localCellLabel == CellLabels::INTERIOR_CELL ||
-				    localCellLabel == CellLabels::BOUNDARY_CELL)
+			    SolveReal sampleValues[2][2][2];
+
+			    for (int zOffset : {0,1})
+				for (int yOffset : {0,1})
 				{
-				    UT_Vector3T<SolveReal> samplePoint = .5 * (UT_Vector3T<SolveReal>(cell) + UT_Vector3T<SolveReal>(.5)) - UT_Vector3T<SolveReal>(.5);
-
-				    UT_Vector3I startCell = UT_Vector3I(samplePoint);
-
-				    UT_Vector3T<SolveReal> interpWeight = samplePoint - UT_Vector3T<SolveReal>(startCell);
-
-				    SolveReal sampleValues[2][2][2];
-
-				    for (int zDirection : {0,1})
-					for (int yDirection : {0,1})
-					{
-					    sourceProbes[yDirection][zDirection].setIndex(startCell[0], startCell[1] + yDirection, startCell[2] + zDirection);
-
-					    for (int xDirection : {0,1})
-					    {
-						sampleValues[xDirection][yDirection][zDirection] = sourceProbes[yDirection][zDirection].getValue(xDirection);
-#if !defined(NDEBUG)
-						if (!(sourceCellLabels(startCell + UT_Vector3I(xDirection, yDirection, zDirection)) == INTERIOR_CELL ||
-							sourceCellLabels(startCell + UT_Vector3I(xDirection, yDirection, zDirection)) == BOUNDARY_CELL))
-						    assert(source(startCell + UT_Vector3I(xDirection, yDirection, zDirection)) == 0);
-#endif
-					    }
-					}
+				    sourceProbes[yOffset][zOffset].setIndex(startCell[0], startCell[1] + yOffset, startCell[2] + zOffset);
 				    
-				    destinationProbe.setIndex(cell[0], cell[1], cell[2]);
-				    destinationProbe.setValue(destinationProbe.getValue() + trilerp(sampleValues[0][0][0], sampleValues[1][0][0], sampleValues[0][1][0], sampleValues[1][1][0],
-												    sampleValues[0][0][1], sampleValues[1][0][1], sampleValues[0][1][1], sampleValues[1][1][1],
-												    interpWeight[0], interpWeight[1], interpWeight[2]));
+				    for (int xOffset : {0,1})
+				    {
+					sampleValues[xOffset][yOffset][zOffset] = sourceProbes[yOffset][zOffset].getValue(xOffset);
+
+#if !defined(NDEBUG)
+					UT_Vector3I testCell = startCell + UT_Vector3I(xOffset, yOffset, zOffset);
+					auto sourceLabel = sourceCellLabels(testCell);
+
+					if (sourceLabel != CellLabels::INTERIOR_CELL && sourceLabel != CellLabels::BOUNDARY_CELL)
+					    assert(sourceProbes[yOffset][zOffset].getValue(xOffset) == 0);
+#endif
+				    }
 				}
-			    }
+			    
+			    destinationProbe.setIndex(vit);
+			    
+			    // !! Warning !!
+			    // The 4x factor in prolongation accounts for the effect of factoring out "dx"
+			    // terms from the multigrid operations. This itself is not strictly symmetric to
+			    // the restriction operator, but it is symmetric when the implicit "dx" is accounted for.
+			    destinationProbe.setValue(destinationProbe.getValue() + 4. * trilerp(sampleValues[0][0][0], sampleValues[1][0][0], sampleValues[0][1][0], sampleValues[1][1][0],
+												sampleValues[0][0][1], sampleValues[1][0][1], sampleValues[0][1][1], sampleValues[1][1][1],
+												interpWeight[0], interpWeight[1], interpWeight[2]));
+			}
+		    }
 		}
 	    }
+	});
+    }
+
+    template<typename SolveReal, typename StoreReal>
+    void
+    scaleVector(UT_VoxelArray<StoreReal> &vector,
+		const SolveReal scale,
+		const UT_VoxelArray<int> &cellLabels)
+    {
+	assert(vector.getVoxelRes() == cellLabels.getVoxelRes());
+
+	UT_Interrupt *boss = UTgetInterrupt();
+
+        UTparallelForEachNumber(cellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+	{
+	    UT_VoxelArrayIterator<int> vit;
+	    vit.setConstArray(&cellLabels);
+
+	    UT_VoxelProbe<StoreReal, true /* read */, true /* write */, true /* test for write */> vectorProbe;
+	    vectorProbe.setArray(&vector);
+	    
+	    for (int i = range.begin(); i != range.end(); ++i)
+            {
+                vit.myTileStart = i;
+                vit.myTileEnd = i + 1;
+                vit.rewind();
+
+		if (boss->opInterrupt())
+		    break;
+
+		if (!vit.isTileConstant() ||
+		    vit.getValue() == CellLabels::INTERIOR_CELL ||
+		    vit.getValue() == CellLabels::BOUNDARY_CELL)
+		{
+		    for (vit.rewind(); !vit.atEnd(); vit.advance())
+		    {
+			if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+			    vit.getValue() == CellLabels::BOUNDARY_CELL)
+			{
+			    vectorProbe.setIndex(vit);
+			    vectorProbe.setValue(scale * vectorProbe.getValue());
+			}
+		    }
+		}
+	    }
+
 	});
     }
 
@@ -1286,20 +1328,20 @@ namespace HDK::GeometricMultigridOperators
 
     template <typename IsExteriorCellFunctor, typename IsInteriorCellFunctor, typename IsDirichletCellFunctor>
     std::pair<UT_Vector3I, int>
-    buildExpandedMGDomainLabels(UT_VoxelArray<int> &mgDomainCellLabels,
-				const UT_VoxelArray<int> &baseDomainCellLabels,
-				const IsExteriorCellFunctor &isExteriorCell,
-				const IsInteriorCellFunctor &isInteriorCell,
-				const IsDirichletCellFunctor &isDirichletCell)
+    buildExpandedCellLabels(UT_VoxelArray<int> &expandedCellLabels,
+			    const UT_VoxelArray<int> &baseCellLabels,
+			    const IsExteriorCellFunctor &isExteriorCell,
+			    const IsInteriorCellFunctor &isInteriorCell,
+			    const IsDirichletCellFunctor &isDirichletCell)
     {
 	// Build domain labels with the appropriate padding to apply
 	// geometric multigrid directly without a wasteful transfer
 	// for each v-cycle.
 
 	// Cap MG levels at 4 voxels in the smallest dimension
-	fpreal minLog = std::min(std::log2(fpreal(baseDomainCellLabels.getVoxelRes()[0])),
-				    std::log2(fpreal(baseDomainCellLabels.getVoxelRes()[1])));
-	minLog = std::min(minLog, std::log2(fpreal(baseDomainCellLabels.getVoxelRes()[2])));
+	fpreal minLog = std::min(std::log2(fpreal(baseCellLabels.getVoxelRes()[0])),
+				    std::log2(fpreal(baseCellLabels.getVoxelRes()[1])));
+	minLog = std::min(minLog, std::log2(fpreal(baseCellLabels.getVoxelRes()[2])));
 
 	int mgLevels = ceil(minLog) - std::log2(fpreal(2));
 
@@ -1307,7 +1349,7 @@ namespace HDK::GeometricMultigridOperators
 	// there is still a single layer of exterior cells
 	int exteriorPadding = std::pow(2, mgLevels - 1);
 
-	UT_Vector3I expandedResolution = baseDomainCellLabels.getVoxelRes() + 2 * UT_Vector3I(exteriorPadding);
+	UT_Vector3I expandedResolution = baseCellLabels.getVoxelRes() + 2 * UT_Vector3I(exteriorPadding);
 
 	// Expand the domain to be a power of 2.
 	for (int axis : {0,1,2})
@@ -1320,21 +1362,21 @@ namespace HDK::GeometricMultigridOperators
     
 	UT_Vector3I exteriorOffset = UT_Vector3I(exteriorPadding);
 
-	mgDomainCellLabels.size(expandedResolution[0], expandedResolution[1], expandedResolution[2]);
-	mgDomainCellLabels.constant(CellLabels::EXTERIOR_CELL);
+	expandedCellLabels.size(expandedResolution[0], expandedResolution[1], expandedResolution[2]);
+	expandedCellLabels.constant(CellLabels::EXTERIOR_CELL);
 
 	// Build domain cell labels
 	UT_Interrupt *boss = UTgetInterrupt();
 
 	// Uncompress internal domain label tiles
 	UT_Array<bool> isTileOccupiedList;
-	isTileOccupiedList.setSize(mgDomainCellLabels.numTiles());
+	isTileOccupiedList.setSize(expandedCellLabels.numTiles());
 	isTileOccupiedList.constant(false);
 
-	UTparallelForEachNumber(baseDomainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+	UTparallelForEachNumber(baseCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
 	    UT_VoxelArrayIterator<int> vit;
-	    vit.setConstArray(&baseDomainCellLabels);
+	    vit.setConstArray(&baseCellLabels);
 	    UT_VoxelTileIterator<int> vitt;
 
 	    for (int i = range.begin(); i != range.end(); ++i)
@@ -1358,7 +1400,7 @@ namespace HDK::GeometricMultigridOperators
 			    {
 				UT_Vector3I cell = UT_Vector3I(vitt.x(), vitt.y(), vitt.z()) + exteriorOffset;
 
-				int tileNumber = mgDomainCellLabels.indexToLinearTile(cell[0], cell[1], cell[2]);
+				int tileNumber = expandedCellLabels.indexToLinearTile(cell[0], cell[1], cell[2]);
 				if (!isTileOccupiedList[tileNumber])
 				    isTileOccupiedList[tileNumber] = true;
 			    }
@@ -1368,18 +1410,16 @@ namespace HDK::GeometricMultigridOperators
 	    }
 	});
 
-	uncompressTiles(mgDomainCellLabels, isTileOccupiedList);
+	uncompressTiles(expandedCellLabels, isTileOccupiedList);
 
 	// Copy initial domain labels to interior domain labels with padding
-	UTparallelForEachNumber(baseDomainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+	UTparallelForEachNumber(baseCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
 	    UT_VoxelArrayIterator<int> vit;
-	    vit.setConstArray(&baseDomainCellLabels);
+	    vit.setConstArray(&baseCellLabels);
 
-	    UT_VoxelTileIterator<int> vitt;
-
-	    UT_VoxelProbe<int, false /* no read */, true /* write */, true /* test for write */> localDomainProbe;
-	    localDomainProbe.setArray(&mgDomainCellLabels);
+	    UT_VoxelProbe<int, false /* no read */, true /* write */, true /* test for write */> expandedCellLabelProbe;
+	    expandedCellLabelProbe.setArray(&expandedCellLabels);
 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -1390,33 +1430,28 @@ namespace HDK::GeometricMultigridOperators
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant() || !isExteriorCell(vit.getValue()))
 		{
-		    if (!vit.isTileConstant() || !isExteriorCell(vit.getValue()))
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			const exint baseCellLabel = vit.getValue();
+			if (!isExteriorCell(baseCellLabel))
 			{
-			    const exint domainValue = vitt.getValue();
-			    if (!isExteriorCell(domainValue))
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			    UT_Vector3I expandedCell = cell + exteriorOffset;
+
+			    assert(!expandedCellLabels.getLinearTile(expandedCellLabels.indexToLinearTile(expandedCell[0],
+													    expandedCell[1],
+													    expandedCell[2]))->isConstant());
+
+			    expandedCellLabelProbe.setIndex(expandedCell[0], expandedCell[1], expandedCell[2]);
+
+			    if (isInteriorCell(baseCellLabel))
+				expandedCellLabelProbe.setValue(CellLabels::INTERIOR_CELL);
+			    else
 			    {
-				UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-				UT_Vector3I expandedCell = cell + exteriorOffset;
-
-				assert(!mgDomainCellLabels.getLinearTile(mgDomainCellLabels.indexToLinearTile(expandedCell[0],
-														expandedCell[1],
-														expandedCell[2]))->isConstant());
-
-				localDomainProbe.setIndex(expandedCell[0], expandedCell[1], expandedCell[2]);
-
-				if (isInteriorCell(domainValue))
-				    localDomainProbe.setValue(CellLabels::INTERIOR_CELL);
-				else
-				{
-				    assert(isDirichletCell(domainValue) && !isExteriorCell(domainValue));
-				    localDomainProbe.setValue(CellLabels::DIRICHLET_CELL);
-				}
+				assert(isDirichletCell(baseCellLabel) && !isExteriorCell(baseCellLabel));
+				expandedCellLabelProbe.setValue(CellLabels::DIRICHLET_CELL);
 			    }
 			}
 		    }
@@ -1424,16 +1459,14 @@ namespace HDK::GeometricMultigridOperators
 	    }
 	});
 
-	mgDomainCellLabels.collapseAllTiles();
-
 	return std::pair<UT_Vector3I, int>(exteriorOffset, mgLevels);
     }
 
     template<typename StoreReal>
     void
-    buildExpandedBoundaryWeights(UT_VoxelArray<StoreReal> &mgBoundaryWeights,
+    buildExpandedBoundaryWeights(UT_VoxelArray<StoreReal> &expandedBoundaryWeights,
 				    const UT_VoxelArray<StoreReal> &baseBoundaryWeights,
-				    const UT_VoxelArray<int> &mgDomainCellLabels,
+				    const UT_VoxelArray<int> &expandedCellLabels,
 				    const UT_Vector3I &exteriorOffset,
 				    const int axis)
     {
@@ -1442,21 +1475,21 @@ namespace HDK::GeometricMultigridOperators
 	using SIM::FieldUtils::faceToCellMap;
 
 #if !defined(NDEBUG)	
-	UT_Vector3I boundaryVoxelRes = mgBoundaryWeights.getVoxelRes();
+	UT_Vector3I boundaryVoxelRes = expandedBoundaryWeights.getVoxelRes();
 	--boundaryVoxelRes[axis];
-	assert(boundaryVoxelRes == mgDomainCellLabels.getVoxelRes());
+	assert(boundaryVoxelRes == expandedCellLabels.getVoxelRes());
 
-	assert(mgBoundaryWeights.getVoxelRes()[0] >= baseBoundaryWeights.getVoxelRes()[0]  + exteriorOffset[0] &&
-		mgBoundaryWeights.getVoxelRes()[1] >= baseBoundaryWeights.getVoxelRes()[1]  + exteriorOffset[1] &&
-		mgBoundaryWeights.getVoxelRes()[2] >= baseBoundaryWeights.getVoxelRes()[2] + exteriorOffset[2]);
+	assert(expandedBoundaryWeights.getVoxelRes()[0] >= baseBoundaryWeights.getVoxelRes()[0]  + exteriorOffset[0] &&
+		expandedBoundaryWeights.getVoxelRes()[1] >= baseBoundaryWeights.getVoxelRes()[1]  + exteriorOffset[1] &&
+		expandedBoundaryWeights.getVoxelRes()[2] >= baseBoundaryWeights.getVoxelRes()[2] + exteriorOffset[2]);
 #endif
 	// Make sure weights are empty
-	mgBoundaryWeights.constant(0);
+	expandedBoundaryWeights.constant(0);
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
 	UT_Array<bool> isTileOccupiedList;
-	isTileOccupiedList.setSize(mgBoundaryWeights.numTiles());
+	isTileOccupiedList.setSize(expandedBoundaryWeights.numTiles());
 	isTileOccupiedList.constant(false);
 
 	UTparallelForEachNumber(baseBoundaryWeights.numTiles(), [&](const UT_BlockedRange<int> &range)
@@ -1464,8 +1497,6 @@ namespace HDK::GeometricMultigridOperators
 	    UT_VoxelArrayIterator<StoreReal> vit;
 	    vit.setConstArray(&baseBoundaryWeights);
 
-	    UT_VoxelTileIterator<StoreReal> vitt;
-
 	    if (boss->opInterrupt())
 		return;
 	 
@@ -1475,45 +1506,38 @@ namespace HDK::GeometricMultigridOperators
 		vit.myTileEnd = i + 1;
 		vit.rewind();
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant() || vit.getValue() > 0)
 		{
-		    if (!vit.isTileConstant() || vit.getValue() > 0)
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
+			if (vit.getValue() > 0)
+			{
+			    UT_Vector3I face(vit.x(), vit.y(), vit.z());
 
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-			{	      
-			    if (vitt.getValue() > 0)
-			    {
-				UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
+			    UT_Vector3I expandedFace = face + exteriorOffset;
 
-				UT_Vector3I expandedFace = face + exteriorOffset;
+			    int tileNumber = expandedBoundaryWeights.indexToLinearTile(expandedFace[0], expandedFace[1], expandedFace[2]);
 
-				int tileNumber = mgBoundaryWeights.indexToLinearTile(expandedFace[0], expandedFace[1], expandedFace[2]);
-
-				if (!isTileOccupiedList[tileNumber])
-				    isTileOccupiedList[tileNumber] = true;
-			    }
+			    if (!isTileOccupiedList[tileNumber])
+				isTileOccupiedList[tileNumber] = true;
 			}
 		    }
 		}
 	    }
 	});
     
-	uncompressTiles(mgBoundaryWeights, isTileOccupiedList);
+	uncompressTiles(expandedBoundaryWeights, isTileOccupiedList);
 
 	UTparallelForEachNumber(baseBoundaryWeights.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
 	    UT_VoxelArrayIterator<StoreReal> vit;
 	    vit.setConstArray(&baseBoundaryWeights);
 
-	    UT_VoxelTileIterator<StoreReal> vitt;
-
 	    if (boss->opInterrupt())
 		return;
 
-	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> mgWeightsProbe;
-	    mgWeightsProbe.setArray(&mgBoundaryWeights);
+	    UT_VoxelProbe<StoreReal, false /* no read */, true /* write */, true /* test for writes */> expandedWeightsProbe;
+	    expandedWeightsProbe.setArray(&expandedBoundaryWeights);
 	 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -1521,40 +1545,32 @@ namespace HDK::GeometricMultigridOperators
 		vit.myTileEnd = i + 1;
 		vit.rewind();
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant() || vit.getValue() > 0)
 		{
-		    if (!vit.isTileConstant() || vit.getValue() > 0)
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-			{	      
-			    if (vitt.getValue() > 0)
-			    {
-				UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
+			if (vit.getValue() > 0)
+			{
+			    UT_Vector3I face(vit.x(), vit.y(), vit.z());
 
 #if !defined(NDEBUG)
-				UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
-				UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
+			    UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
+			    UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
 
-				assert(mgDomainCellLabels(backwardCell + exteriorOffset) != CellLabels::EXTERIOR_CELL &&
-					mgDomainCellLabels(forwardCell + exteriorOffset) != CellLabels::EXTERIOR_CELL);
-
-				assert(mgDomainCellLabels(backwardCell + exteriorOffset) == CellLabels::INTERIOR_CELL ||
-					mgDomainCellLabels(forwardCell + exteriorOffset) == CellLabels::INTERIOR_CELL);
+			    assert(expandedCellLabels(backwardCell + exteriorOffset) != CellLabels::EXTERIOR_CELL &&
+				    expandedCellLabels(forwardCell + exteriorOffset) != CellLabels::EXTERIOR_CELL);
 #endif
 
-				UT_Vector3I expandedFace = face + exteriorOffset;
-				assert(!mgBoundaryWeights.getLinearTile(mgBoundaryWeights.indexToLinearTile(expandedFace[0],
-													    expandedFace[1],
-													    expandedFace[2]))->isConstant());
+			    UT_Vector3I expandedFace = face + exteriorOffset;
+			    assert(!expandedBoundaryWeights.getLinearTile(expandedBoundaryWeights.indexToLinearTile(expandedFace[0],
+														    expandedFace[1],
+														    expandedFace[2]))->isConstant());
 
-				mgWeightsProbe.setIndex(face[0] + exteriorOffset[0],
-							face[1] + exteriorOffset[1],
-							face[2] + exteriorOffset[2]);
+			    expandedWeightsProbe.setIndex(face[0] + exteriorOffset[0],
+							    face[1] + exteriorOffset[1],
+							    face[2] + exteriorOffset[2]);
 
-				mgWeightsProbe.setValue(vitt.getValue());
-			    }
+			    expandedWeightsProbe.setValue(vit.getValue());
 			}
 		    }
 		}
@@ -1564,7 +1580,7 @@ namespace HDK::GeometricMultigridOperators
 
     template<typename StoreReal>
     void
-    setBoundaryDomainLabels(UT_VoxelArray<int> &domainCellLabels,
+    setBoundaryCellLabels(UT_VoxelArray<int> &cellLabels,
 			    const std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights)
     {
 	using SIM::FieldUtils::cellToCellMap;
@@ -1573,16 +1589,10 @@ namespace HDK::GeometricMultigridOperators
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
-	// Now set INTERIOR cells with DIRICHLET or EXTERIOR neighbours OR a non-unity boundary weight to BOUNDARY
-	UT_Array<UT_Array<UT_Vector3I>> boundaryCellList;
-	boundaryCellList.setSize(domainCellLabels.numTiles());
-
-	UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+	UTparallelForEachNumber(cellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
 	{
 	    UT_VoxelArrayIterator<int> vit;
-	    vit.setConstArray(&domainCellLabels);
-
-	    UT_VoxelTileIterator<int> vitt;
+	    vit.setConstArray(&cellLabels);
 
 	    for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
 	    {
@@ -1590,75 +1600,55 @@ namespace HDK::GeometricMultigridOperators
 		vit.myTileEnd = tileNumber + 1;
 		vit.rewind();
 
-		UT_Array<UT_Vector3I> &localBoundaryCellList = boundaryCellList[tileNumber];
-
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant() || vit.getValue() == CellLabels::INTERIOR_CELL)
 		{
-		    if (!vit.isTileConstant() ||
-			vit.getValue() == CellLabels::INTERIOR_CELL)
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			if (vit.getValue() == CellLabels::INTERIOR_CELL)
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL)
-			    {
-				UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-				bool isBoundaryCell = false;
+			    bool isBoundaryCell = false;
 
-				for (int axis = 0; axis < 3 & !isBoundaryCells; ++axis)
-				    for (int direction : {0,1})
+			    for (int axis = 0; axis < 3 & !isBoundaryCell; ++axis)
+				for (int direction : {0,1})
+				{
+				    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
+
+				    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < cellLabels.getVoxelRes()[axis]);
+
+				    if (cellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL ||
+					cellLabels(adjacentCell) == CellLabels::EXTERIOR_CELL)
 				    {
-					UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
-
-					assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
-
-					if (domainCellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL ||
-					    domainCellLabels(adjacentCell) == CellLabels::EXTERIOR_CELL)
-					{
-					    isBoundaryCell = true;
-					    break;
-					}
-
-					// Check boundary weight
-					UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-
-					if (boundaryWeights[axis](face) != 1)
-					{
-					    isBoundaryCell = true;
-					    break;
-					}
+					isBoundaryCell = true;
+					break;
 				    }
 
-				if (hasBoundaryNeighbour)
-				    localBoundaryCellList.append(cell);
+				    // Check boundary weight
+				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+
+				    if (boundaryWeights[axis](face) != 1)
+				    {
+					isBoundaryCell = true;
+					break;
+				    }
+				}
+
+			    if (isBoundaryCell)
+			    {
+				assert(!cellLabels.getLinearTile(cellLabels.indexToLinearTile(cell[0], cell[1], cell[2]))->isConstant());
+				cellLabels.setValue(cell, CellLabels::BOUNDARY_CELL);
 			    }
 			}
+			else assert(vit.getValue() != CellLabels::BOUNDARY_CELL);
 		    }
 		}
 	    }
 	});
-
-	UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
-	{
-	    for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
-	    {
-		UT_Array<UT_Vector3I> &localBoundaryCellList = boundaryCellList[tileNumber];
-
-		for (int cellIndex = 0; cellIndex < localBoundaryCellList.size(); ++cellIndex)
-		{
-		    UT_Vector3I cell = localBoundaryCellList[cellIndex];
-		    assert(domainCellLabels(cell) == CellLabels::INTERIOR_CELL);
-
-		    domainCellLabels.setValue(cell, CellLabels::BOUNDARY_CELL);
-		}
-	    }
-	});
     }
-
 
     template<typename GridType>
     void
@@ -1747,7 +1737,6 @@ namespace HDK::GeometricMultigridOperators
 	{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&domainCellLabels);
-	    UT_VoxelTileIterator<int> vitt;
 
 	    for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
 	    {
@@ -1758,38 +1747,134 @@ namespace HDK::GeometricMultigridOperators
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant())
 		{
-		    if (!vit.isTileConstant())
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+			    vit.getValue() == CellLabels::BOUNDARY_CELL)
 			{
-			    if (vitt.getValue() == CellLabels::INTERIOR_CELL ||
-				vitt.getValue() == CellLabels::BOUNDARY_CELL)
-			    {
-				UT_Vector3I cell = UT_Vector3I(vitt.x(), vitt.y(), vitt.z());
+			    UT_Vector3I cell = UT_Vector3I(vit.x(), vit.y(), vit.z());
 
-				assert(tileNumber == domainCellLabels.indexToLinearTile(cell[0], cell[1], cell[2]) &&
-					tileNumber == grid.indexToLinearTile(cell[0], cell[1], cell[2]));
+			    assert(tileNumber == domainCellLabels.indexToLinearTile(cell[0], cell[1], cell[2]) &&
+				    tileNumber == grid.indexToLinearTile(cell[0], cell[1], cell[2]));
 
-				if (!isTileOccupiedList[tileNumber])
-				    isTileOccupiedList[tileNumber] = true;
-			    }
+			    if (!isTileOccupiedList[tileNumber])
+				isTileOccupiedList[tileNumber] = true;
 			}
 		    }
-		    else if (vit.getValue() == CellLabels::INTERIOR_CELL ||
-				vit.getValue() == CellLabels::BOUNDARY_CELL)
-		    {
-			if (!isTileOccupiedList[tileNumber])
-			    isTileOccupiedList[tileNumber] = true;
-		    }
+		}
+		else if (vit.getValue() == CellLabels::INTERIOR_CELL ||
+			    vit.getValue() == CellLabels::BOUNDARY_CELL)
+		{
+		    if (!isTileOccupiedList[tileNumber])
+			isTileOccupiedList[tileNumber] = true;
 		}
 	    }
 	});
 
 	uncompressTiles(grid, isTileOccupiedList);
+    }
+
+    template<typename StoreReal>
+    bool
+    unitTestBoundaryCells(const UT_VoxelArray<int> &cellLabels,
+			    const std::array<UT_VoxelArray<StoreReal>, 3> *boundaryWeights)
+    {
+	using SIM::FieldUtils::cellToFaceMap;
+
+	if (boundaryWeights != nullptr)
+	{
+	    assert( (*boundaryWeights)[0].getVoxelRes()[0] - 1 == cellLabels.getVoxelRes()[0] &&
+		    (*boundaryWeights)[0].getVoxelRes()[1]     == cellLabels.getVoxelRes()[1] &&
+		    (*boundaryWeights)[0].getVoxelRes()[2]     == cellLabels.getVoxelRes()[2] &&
+
+		    (*boundaryWeights)[1].getVoxelRes()[0]     == cellLabels.getVoxelRes()[0] &&
+		    (*boundaryWeights)[1].getVoxelRes()[1] - 1 == cellLabels.getVoxelRes()[1] &&
+		    (*boundaryWeights)[1].getVoxelRes()[2]     == cellLabels.getVoxelRes()[2] &&
+
+		    (*boundaryWeights)[2].getVoxelRes()[0]     == cellLabels.getVoxelRes()[0] &&
+		    (*boundaryWeights)[2].getVoxelRes()[1]     == cellLabels.getVoxelRes()[1] &&
+		    (*boundaryWeights)[2].getVoxelRes()[2] - 1 == cellLabels.getVoxelRes()[2]);
+	}
+
+	UT_Interrupt *boss = UTgetInterrupt();
+
+	bool boundaryCellTestPassed = true;
+
+	UTparallelForEachNumber(cellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
+	{
+	    if (!boundaryCellTestPassed)
+		return;
+
+	    UT_VoxelArrayIterator<int> vit;
+	    vit.setConstArray(&cellLabels);
+
+	    for (int i = range.begin(); i != range.end(); ++i)
+	    {
+		vit.myTileStart = i;
+		vit.myTileEnd = i + 1;
+		vit.rewind();
+
+		if (boss->opInterrupt())
+		    return;
+		    
+		if (!vit.isTileConstant() ||
+		    vit.getValue() == CellLabels::INTERIOR_CELL ||
+		    vit.getValue() == CellLabels::BOUNDARY_CELL)
+		{
+		    for (; !vit.atEnd(); vit.advance())
+		    {
+			UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+
+			if (vit.getValue() == CellLabels::INTERIOR_CELL)
+			{
+			    for (int axis : {0,1,2})
+				for (int direction : {0,1})
+				{
+				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
+
+				    if (!(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
+					    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL))
+				    {
+					boundaryCellTestPassed = false;
+					return;
+				    }
+				}
+			}
+			else if (vit.getValue() == CellLabels::BOUNDARY_CELL)
+			{
+			    bool hasValidBoundary = false;
+
+			    for (int axis : {0,1,2})
+				for (int direction : {0,1})
+				{
+				    UT_Vector3I adjacentCell = SIM::FieldUtils::cellToCellMap(cell, axis, direction);
+
+				    if (!(cellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
+					    cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL))
+					    hasValidBoundary = true;
+				    else if (boundaryWeights != nullptr)
+				    {
+					UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+					
+					if ((*boundaryWeights)[axis](face) != 1 && cellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL)
+					    hasValidBoundary = true;
+				    }
+				}
+
+			    if (!hasValidBoundary)
+			    {
+				boundaryCellTestPassed = false;
+				return;
+			    }
+			}
+		    }
+		}
+	    }
+	});
+
+	return boundaryCellTestPassed;
     }
 
 } // HDK::GeometricMultigridOperators
