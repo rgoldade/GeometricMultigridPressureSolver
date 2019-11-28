@@ -377,14 +377,14 @@ HDK_GeometricFreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	    boundaryWeights[axis].size(weightSize[0], weightSize[1], weightSize[2]);
 	    boundaryWeights[axis].constant(0);
 
-	    HDK::GeometricMultigridOperators::buildMGBoundaryWeights(boundaryWeights[axis],
-								    cutCellWeights[axis],
-								    *validFaces->getField(axis),
-								    liquidSurface,
-								    materialCellLabels,
-								    domainCellLabels,
-								    exteriorOffset,
-								    axis);
+	    buildMGBoundaryWeights(boundaryWeights[axis],
+				    cutCellWeights[axis],
+				    *validFaces->getField(axis),
+				    liquidSurface,
+				    materialCellLabels,
+				    domainCellLabels,
+				    exteriorOffset,
+				    axis);
 	}
     }
 
@@ -398,7 +398,7 @@ HDK_GeometricFreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	std::cout << "\n// Set boundary domain labels" << std::endl;
 	UT_PerfMonAutoSolveEvent event(this, "Set boundary domain labels");
 	
-	HDK::GeometricMultigridOperators::setBoundaryDomainLabels(domainCellLabels, boundaryWeights);
+	HDK::GeometricMultigridOperators::setBoundaryCellLabels(domainCellLabels, boundaryWeights);
 
 	assert(HDK::GeometricMultigridOperators::unitTestBoundaryCells<StoreReal>(domainCellLabels, &boundaryWeights));
 	assert(HDK::GeometricMultigridOperators::unitTestExteriorCells(domainCellLabels));

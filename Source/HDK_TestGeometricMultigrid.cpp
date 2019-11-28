@@ -13,13 +13,12 @@
 #include <UT/UT_ParallelUtil.h>
 #include <UT/UT_PerfMonAutoEvent.h>
 
-
-// TODO: remove stop watch
 #include <UT/UT_StopWatch.h>
 
 #include "HDK_GeometricCGPoissonSolver.h"
 #include "HDK_GeometricMultigridOperators.h"
 #include "HDK_GeometricMultigridPoissonSolver.h"
+#include "HDK_Utilities.h"
 
 void initializeSIM(void *)
 {
@@ -448,7 +447,7 @@ buildComplexDomain(UT_VoxelArray<int> &domainCellLabels,
 				// Sine wave for air-liquid boundary.
 				assert((backwardSDF > 0 && forwardSDF <= 0) || (backwardSDF <= 0 && forwardSDF > 0));
 
-				StoreReal theta = HDK::Utilities::computeGhostFluidWeights(backwardSDF, forwardSDF);
+				StoreReal theta = HDK::Utilities::computeGhostFluidWeight(backwardSDF, forwardSDF);
 				assert(theta < 1);
 				theta = SYSclamp(StoreReal(theta), StoreReal(.01), StoreReal(1));
 
