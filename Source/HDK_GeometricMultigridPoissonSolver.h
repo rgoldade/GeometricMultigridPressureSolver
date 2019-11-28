@@ -20,7 +20,8 @@ namespace HDK
 	GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialCellLabels,
 					const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights,
 					const int mgLevels,
-					const bool useGaussSeidel);
+					const bool useGaussSeidel,
+					const bool doPrintStats = false);
 
 	void
 	applyVCycle(UT_VoxelArray<StoreReal> &solutionVector,
@@ -42,6 +43,7 @@ namespace HDK
 	const int myBoundarySmootherIterations;
 
 	const bool myUseGaussSeidel;
+	const bool myDoPrintStats;
 
 	UT_VoxelArray<int> myDirectSolverIndices;
 	Eigen::SparseMatrix<SolveReal> mySparseMatrix;

@@ -377,14 +377,14 @@ HDK_GeometricFreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	    boundaryWeights[axis].size(weightSize[0], weightSize[1], weightSize[2]);
 	    boundaryWeights[axis].constant(0);
 
-	    buildMGBoundaryWeights(boundaryWeights[axis],
-				    cutCellWeights[axis],
-				    *validFaces->getField(axis),
-				    liquidSurface,
-				    materialCellLabels,
-				    domainCellLabels,
-				    exteriorOffset,
-				    axis);
+	    HDK::GeometricMultigridOperators::buildMGBoundaryWeights(boundaryWeights[axis],
+								    cutCellWeights[axis],
+								    *validFaces->getField(axis),
+								    liquidSurface,
+								    materialCellLabels,
+								    domainCellLabels,
+								    exteriorOffset,
+								    axis);
 	}
     }
 
@@ -398,7 +398,7 @@ HDK_GeometricFreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	std::cout << "\n// Set boundary domain labels" << std::endl;
 	UT_PerfMonAutoSolveEvent event(this, "Set boundary domain labels");
 	
-	setBoundaryDomainLabels(domainCellLabels, boundaryWeights);
+	HDK::GeometricMultigridOperators::setBoundaryDomainLabels(domainCellLabels, boundaryWeights);
 
 	assert(HDK::GeometricMultigridOperators::unitTestBoundaryCells<StoreReal>(domainCellLabels, &boundaryWeights));
 	assert(HDK::GeometricMultigridOperators::unitTestExteriorCells(domainCellLabels));
@@ -1170,102 +1170,6 @@ HDK_GeometricFreeSurfacePressureSolver::buildMGBoundaryWeights(UT_VoxelArray<Sto
 			}
 		    }
 		}
-	    }
-	}
-    });
-}
-
-void
-HDK_GeometricFreeSurfacePressureSolver::setBoundaryDomainLabels(UT_VoxelArray<int> &domainCellLabels,
-								const std::array<UT_VoxelArray<StoreReal>, 3> &boundaryWeights) const
-{
-    using SIM::FieldUtils::cellToCellMap;
-    using SIM::FieldUtils::cellToFaceMap;
-    using HDK::GeometricMultigridOperators::CellLabels;
-
-    UT_Interrupt *boss = UTgetInterrupt();
-
-    // Now set INTERIOR cells with DIRICHLET or EXTERIOR neighbours OR a non-unity boundary weight to BOUNDARY
-    UT_Array<UT_Array<UT_Vector3I>> boundaryCellList;
-    boundaryCellList.setSize(domainCellLabels.numTiles());
-
-    UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
-    {
-	UT_VoxelArrayIterator<int> vit;
-	vit.setConstArray(&domainCellLabels);
-
-	UT_VoxelTileIterator<int> vitt;
-
-	for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
-	{
-	    vit.myTileStart = tileNumber;
-	    vit.myTileEnd = tileNumber + 1;
-	    vit.rewind();
-
-	    UT_Array<UT_Vector3I> &localBoundaryCellList = boundaryCellList[tileNumber];
-
-	    if (boss->opInterrupt())
-		break;
-
-	    if (!vit.atEnd())
-	    {
-		if (!vit.isTileConstant() ||
-		    vit.getValue() == CellLabels::INTERIOR_CELL)
-		{
-		    vitt.setTile(vit);
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-		    {
-			if (vitt.getValue() == CellLabels::INTERIOR_CELL)
-			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-
-			    bool hasBoundaryNeighbour = false;
-
-			    for (int axis = 0; axis < 3 & !hasBoundaryNeighbour; ++axis)
-				for (int direction : {0,1})
-				{
-				    UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
-
-				    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < domainCellLabels.getVoxelRes()[axis]);
-
-				    if (domainCellLabels(adjacentCell) == CellLabels::DIRICHLET_CELL ||
-					domainCellLabels(adjacentCell) == CellLabels::EXTERIOR_CELL)
-				    {
-					hasBoundaryNeighbour = true;
-					break;
-				    }
-
-				    // Check boundary weight
-				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-
-				    if (boundaryWeights[axis](face) != 1)
-				    {
-					hasBoundaryNeighbour = true;
-					break;
-				    }
-				}
-
-			    if (hasBoundaryNeighbour)
-				localBoundaryCellList.append(cell);
-			}
-		    }
-		}
-	    }
-	}
-    });
-
-    UTparallelForEachNumber(domainCellLabels.numTiles(), [&](const UT_BlockedRange<int> &range)
-    {
-	for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
-	{
-	    UT_Array<UT_Vector3I> &localBoundaryCellList = boundaryCellList[tileNumber];
-
-	    for (int cellIndex = 0; cellIndex < localBoundaryCellList.size(); ++cellIndex)
-	    {
-		UT_Vector3I cell = localBoundaryCellList[cellIndex];
-		assert(domainCellLabels(cell) == CellLabels::INTERIOR_CELL);
-
-		domainCellLabels.setValue(cell, CellLabels::BOUNDARY_CELL);
 	    }
 	}
     });

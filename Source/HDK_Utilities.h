@@ -163,57 +163,34 @@ namespace HDK::Utilities
 	    UT_VoxelArrayIteratorF vit(validFaces.fieldNC());
 	    vit.setCompressOnExit(true);
 
-	    UT_VoxelTileIteratorF vitt;
-
 	    for (exint i = range.begin(); i != range.end(); ++i)
             {
                 vit.myTileStart = i;
                 vit.myTileEnd = i + 1;
                 vit.rewind();
 
-                if (!vit.atEnd())
-                {
-		    if (boss->opInterrupt())
-			return;
+		if (boss->opInterrupt())
+		    return;
 
-		    if (!vit.isTileConstant())
+		if (!vit.isTileConstant())
+		{
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
+			UT_Vector3I face(vit.x(), vit.y(), vit.z());
 
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			if (getFieldValue(cutCellWeights, face) > 0)
 			{
-			    UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
+			    // If either cell has a valid liquid cell label then this
+			    // face will contain a valid velocity value.
+			    UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
+			    UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
 
-			    if (getFieldValue(cutCellWeights, face) > 0)
+			    if (backwardCell[axis] >= 0  && forwardCell[axis] < voxelRes[axis])
 			    {
-				// If either cell has a valid liquid cell label then this
-				// face will contain a valid velocity value.
-				UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
-				UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
-
-				if (backwardCell[axis] < 0 || forwardCell[axis] >= voxelRes[axis])
+				if (activeCellFunctor(getFieldValue(activeCellLabels, backwardCell)) ||
+				    activeCellFunctor(getFieldValue(activeCellLabels, forwardCell)))
 				{
-				    if (backwardCell[axis] < 0)
-				    {
-					if (activeCellFunctor(getFieldValue(activeCellLabels, forwardCell)))
-					    vitt.setValue(HDK::Utilities::VALID_FACE);
-				    }
-				    else if (forwardCell[axis] >= voxelRes[axis])
-				    {
-					// If we actually go way out of bounds here, that's a problem.
-					assert(forwardCell[axis] == voxelRes[axis]);
-
-					if (activeCellFunctor(getFieldValue(activeCellLabels, backwardCell)))
-					    vitt.setValue(HDK::Utilities::VALID_FACE);
-				    }
-				}
-				else
-				{
-				    if (activeCellFunctor(getFieldValue(activeCellLabels, backwardCell)) ||
-					activeCellFunctor(getFieldValue(activeCellLabels, forwardCell)))
-				    {
-					vitt.setValue(HDK::Utilities::VALID_FACE);
-				    }
+				    vit.setValue(HDK::Utilities::VALID_FACE);
 				}
 			    }
 			}
