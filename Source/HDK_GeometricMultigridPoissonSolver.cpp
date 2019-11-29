@@ -135,11 +135,13 @@ namespace HDK
     GeometricMultigridPoissonSolver::GeometricMultigridPoissonSolver(const UT_VoxelArray<int> &initialDomainCellLabels,
 									const std::array<UT_VoxelArray<StoreReal>, 3>  &boundaryWeights,
 									const int mgLevels,
-									const bool useGaussSeidel)
+									const bool useGaussSeidel,
+									const bool doPrintStats)
     : myMGLevels(mgLevels)
     , myBoundarySmootherWidth(3)
     , myBoundarySmootherIterations(3)
     , myUseGaussSeidel(useGaussSeidel)
+    , myDoPrintStats(doPrintStats)
     {
 	using namespace HDK::GeometricMultigridOperators;
 	using namespace SIM::FieldUtils;
@@ -427,7 +429,8 @@ namespace HDK
 	
 	// Apply fine-level smoothing pass
 	{
-	    std::cout << "    Fine Downstroke Smoother" << std::endl;
+	    if (myDoPrintStats)
+		std::cout << "    Fine Downstroke Smoother" << std::endl;
 
 	    {
 		UT_StopWatch boundarySmoothTimer;
@@ -448,8 +451,11 @@ namespace HDK
 								&myFineBoundaryWeights);
 		}
 
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -478,9 +484,11 @@ namespace HDK
 							myCellLabels[0],
 							&myFineBoundaryWeights);
 		}
-
-		auto time = smoothTimer.stop();
-		std::cout << "      Smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = smoothTimer.stop();
+		    std::cout << "      Smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -497,8 +505,11 @@ namespace HDK
 								&myFineBoundaryWeights);
 		}
 
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -513,8 +524,11 @@ namespace HDK
 						    myCellLabels[0],
 						    &myFineBoundaryWeights);
 
-		auto time = computeResidualTimer.stop();
-		std::cout << "      Compute residual time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = computeResidualTimer.stop();
+		    std::cout << "      Compute residual time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -527,16 +541,19 @@ namespace HDK
 					myResidualGrids[0],
 					myCellLabels[1],
 					myCellLabels[0]);
-
-		auto time = restrictionTimer.stop();
-		std::cout << "      Restriction time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = restrictionTimer.stop();
+		    std::cout << "      Restriction time: " << time << std::endl;
+		}
 	    }
 	}
 
 	// Apply course-level smoothing pass
 	for (int level = 1; level < myMGLevels - 1; ++level)
 	{
-	    std::cout << "    Downstroke Smoother level: " << level << std::endl;
+	    if (myDoPrintStats)
+		std::cout << "    Downstroke Smoother level: " << level << std::endl;
 
 	    {
 		UT_StopWatch boundarySmoothTimer;
@@ -553,9 +570,12 @@ namespace HDK
 								myCellLabels[level],
 								myBoundaryCells[level]);
 		}
-
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -582,8 +602,11 @@ namespace HDK
 							myCellLabels[level]);
 		}
 
-		auto time = smoothTimer.stop();
-		std::cout << "      Smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = smoothTimer.stop();
+		    std::cout << "      Smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -598,40 +621,44 @@ namespace HDK
 								myCellLabels[level],
 								myBoundaryCells[level]);
 		}
-
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
 		UT_StopWatch computeResidualTimer;
 		computeResidualTimer.start();
 
-		//myResidualGrids[level].constant(0);
 		// Compute residual to restrict to the next level
 		computePoissonResidual<SolveReal>(myResidualGrids[level],
 						    mySolutionGrids[level],
 						    myRHSGrids[level],
 						    myCellLabels[level]);
-
-		auto time = computeResidualTimer.stop();
-		std::cout << "      Compute residual time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = computeResidualTimer.stop();
+		    std::cout << "      Compute residual time: " << time << std::endl;
+		}
 	    }
 
 	    {
 		UT_StopWatch restrictionTimer;
 		restrictionTimer.start();
 
-		//myRHSGrids[level + 1].constant(0);
-
 		downsample<SolveReal>(myRHSGrids[level + 1],
 					myResidualGrids[level],
 					myCellLabels[level + 1],
 					myCellLabels[level]);
 
-
-		auto time = restrictionTimer.stop();
-		std::cout << "      Restriction time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = restrictionTimer.stop();
+		    std::cout << "      Restriction time: " << time << std::endl;
+		}
 	    }
 	}
 
@@ -653,14 +680,19 @@ namespace HDK
 				myDirectSolverIndices,
 				myCellLabels[myMGLevels - 1]);
 
-	    auto time = directSolveTimer.stop();
-	    std::cout << "      Direct solve time: " << time << std::endl;
+	    if (myDoPrintStats)
+	    {
+		auto time = directSolveTimer.stop();
+		std::cout << "      Direct solve time: " << time << std::endl;
+	    }
 	}
 
 	// Up-stroke of the v-cycle
 	for (int level = myMGLevels - 2; level >= 1; --level)
 	{
-	    std::cout << "    Upstroke Smoother level: " << level << std::endl;
+	    if (myDoPrintStats)
+		std::cout << "    Upstroke Smoother level: " << level << std::endl;
+
 	    {
 		UT_StopWatch prolongationTimer;
 		prolongationTimer.start();
@@ -669,9 +701,11 @@ namespace HDK
 					    mySolutionGrids[level + 1],
 					    myCellLabels[level],
 					    myCellLabels[level + 1]);
-
-		auto time = prolongationTimer.stop();
-		std::cout << "      Prolongation time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = prolongationTimer.stop();
+		    std::cout << "      Prolongation time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -687,8 +721,11 @@ namespace HDK
 								myBoundaryCells[level]);
 		}
 
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -715,8 +752,11 @@ namespace HDK
 							myCellLabels[level]);
 		}
 
-		auto time = smoothTimer.stop();
-		std::cout << "      Smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = smoothTimer.stop();
+		    std::cout << "      Smoother time: " << time << std::endl;
+		}
 	    }
 	    {
 		UT_StopWatch boundarySmoothTimer;
@@ -731,14 +771,19 @@ namespace HDK
 								myBoundaryCells[level]);
 		}
 
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 	}
 
 	// Apply fine-level upstroke
     	{
-	    std::cout << "    Fine Upstroke Smoother" << std::endl;
+	    if (myDoPrintStats)
+		std::cout << "    Fine Upstroke Smoother" << std::endl;
+
 	    {
 		UT_StopWatch prolongationTimer;
 		prolongationTimer.start();
@@ -747,9 +792,11 @@ namespace HDK
 					    mySolutionGrids[1],
 					    myCellLabels[0],
 					    myCellLabels[1]);
-
-		auto time = prolongationTimer.stop();
-		std::cout << "      Prolongation time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = prolongationTimer.stop();
+		    std::cout << "      Prolongation time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -766,8 +813,11 @@ namespace HDK
 								&myFineBoundaryWeights);
 		}
 
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 
 	    {
@@ -797,8 +847,11 @@ namespace HDK
 							&myFineBoundaryWeights);
 		}
 
-		auto time = smoothTimer.stop();
-		std::cout << "      Smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = smoothTimer.stop();
+		    std::cout << "      Smoother time: " << time << std::endl;
+		}
 	    }
 	    {
 		UT_StopWatch boundarySmoothTimer;
@@ -814,8 +867,11 @@ namespace HDK
 								&myFineBoundaryWeights);
 		}
 
-		auto time = boundarySmoothTimer.stop();
-		std::cout << "      Boundary smoother time: " << time << std::endl;
+		if (myDoPrintStats)
+		{
+		    auto time = boundarySmoothTimer.stop();
+		    std::cout << "      Boundary smoother time: " << time << std::endl;
+		}
 	    }
 	}
     }

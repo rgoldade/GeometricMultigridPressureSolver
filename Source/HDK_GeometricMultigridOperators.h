@@ -1377,7 +1377,6 @@ namespace HDK::GeometricMultigridOperators
 	{
 	    UT_VoxelArrayIterator<int> vit;
 	    vit.setConstArray(&baseCellLabels);
-	    UT_VoxelTileIterator<int> vitt;
 
 	    for (int i = range.begin(); i != range.end(); ++i)
 	    {
@@ -1388,22 +1387,17 @@ namespace HDK::GeometricMultigridOperators
 		if (boss->opInterrupt())
 		    break;
 
-		if (!vit.atEnd())
+		if (!vit.isTileConstant() || !isExteriorCell(vit.getValue()))
 		{
-		    if (!vit.isTileConstant() || !isExteriorCell(vit.getValue()))
+		    for (; !vit.atEnd(); vit.advance())
 		    {
-			vitt.setTile(vit);
-
-			for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+			if (!isExteriorCell(vit.getValue()))
 			{
-			    if (!isExteriorCell(vitt.getValue()))
-			    {
-				UT_Vector3I cell = UT_Vector3I(vitt.x(), vitt.y(), vitt.z()) + exteriorOffset;
+			    UT_Vector3I expandedCell = UT_Vector3I(vit.x(), vit.y(), vit.z()) + exteriorOffset;
 
-				int tileNumber = expandedCellLabels.indexToLinearTile(cell[0], cell[1], cell[2]);
-				if (!isTileOccupiedList[tileNumber])
-				    isTileOccupiedList[tileNumber] = true;
-			    }
+			    int tileNumber = expandedCellLabels.indexToLinearTile(expandedCell[0], expandedCell[1], expandedCell[2]);
+			    if (!isTileOccupiedList[tileNumber])
+				isTileOccupiedList[tileNumber] = true;
 			}
 		    }
 		}
@@ -1434,7 +1428,7 @@ namespace HDK::GeometricMultigridOperators
 		{
 		    for (; !vit.atEnd(); vit.advance())
 		    {
-			const exint baseCellLabel = vit.getValue();
+			const int baseCellLabel = vit.getValue();
 			if (!isExteriorCell(baseCellLabel))
 			{
 			    UT_Vector3I cell(vit.x(), vit.y(), vit.z());
@@ -1480,7 +1474,7 @@ namespace HDK::GeometricMultigridOperators
 	assert(boundaryVoxelRes == expandedCellLabels.getVoxelRes());
 
 	assert(expandedBoundaryWeights.getVoxelRes()[0] >= baseBoundaryWeights.getVoxelRes()[0]  + exteriorOffset[0] &&
-		expandedBoundaryWeights.getVoxelRes()[1] >= baseBoundaryWeights.getVoxelRes()[1]  + exteriorOffset[1] &&
+		expandedBoundaryWeights.getVoxelRes()[1] >= baseBoundaryWeights.getVoxelRes()[1] + exteriorOffset[1] &&
 		expandedBoundaryWeights.getVoxelRes()[2] >= baseBoundaryWeights.getVoxelRes()[2] + exteriorOffset[2]);
 #endif
 	// Make sure weights are empty

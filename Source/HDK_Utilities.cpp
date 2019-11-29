@@ -53,6 +53,7 @@ namespace HDK::Utilities
 
 	UT_VoxelArrayIteratorI vit;
 	vit.setConstArray(materialCellLabels.field());
+
 	UT_VoxelTileIteratorI vitt;
 
 	exint liquidCellCount = 0;
@@ -183,6 +184,4 @@ namespace HDK::Utilities
 		isTileOccupiedList[tileNumber] = true;
 	}
     }
-
-
 } // namespace HDK::Utilities
