@@ -1652,14 +1652,11 @@ namespace HDK::GeometricMultigridOperators
 	UT_Interrupt *boss = UTgetInterrupt();
 	UTparallelFor(UT_BlockedRange<exint>(0, isTileOccupiedList.size()), [&](const UT_BlockedRange<exint> &range)
 	{
+	    if (boss->opInterrupt())
+		return;
+
 	    for (exint i = range.begin(); i != range.end(); ++i)
 	    {
-		if (!(i & 127))
-		{
-		    if (boss->opInterrupt())
-			return;
-		}
-
 		if (isTileOccupiedList[i])
 		    grid.getLinearTile(i)->uncompress();
 	    }

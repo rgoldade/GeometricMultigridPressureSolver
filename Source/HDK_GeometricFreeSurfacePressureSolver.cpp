@@ -1231,12 +1231,12 @@ HDK_GeometricFreeSurfacePressureSolver::applySolutionToPressure(SIM_RawField &pr
 
 void
 HDK_GeometricFreeSurfacePressureSolver::applyPressureGradient(SIM_RawField &velocity,
-							const SIM_RawField &validFaces,
-							const SIM_RawField &pressure,
-							const SIM_RawField &liquidSurface,
-							const SIM_RawField &cutCellWeights,
-							const SIM_RawIndexField &materialCellLabels,
-							const int axis) const
+								const SIM_RawField &validFaces,
+								const SIM_RawField &pressure,
+								const SIM_RawField &liquidSurface,
+								const SIM_RawField &cutCellWeights,
+								const SIM_RawIndexField &materialCellLabels,
+								const int axis) const
 {
     using SIM::FieldUtils::setFieldValue;
     using SIM::FieldUtils::getFieldValue;
