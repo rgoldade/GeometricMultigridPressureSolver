@@ -14,9 +14,9 @@ class SIM_ScalarField;
 namespace HDK::Utilities
 {
     // Standard pressure solver labels
+    enum FreeSurfaceMaterialLabels { SOLID_CELL, LIQUID_CELL, AIR_CELL };
+
     static constexpr exint UNLABELLED_CELL = -1;
-    static constexpr exint LIQUID_CELL = -2;
-    static constexpr exint AIR_CELL = -3;
 
     // Valid face labels
     static constexpr fpreal VALID_FACE = 1;
@@ -46,10 +46,10 @@ namespace HDK::Utilities
 			    const SIM_RawIndexField &liquidCellLabels);
 
     void
-    buildLiquidCellLabels(SIM_RawIndexField &materialCellLabels,
-				    const SIM_RawField &liquidSurface,
-				    const SIM_RawField &solidSurface,
-				    const std::array<SIM_RawField, 3> &cutCellWeights);
+    buildMaterialCellLabels(SIM_RawIndexField &materialCellLabels,
+			    const SIM_RawField &liquidSurface,
+			    const SIM_RawField &solidSurface,
+			    const std::array<const SIM_RawField *, 3> &cutCellWeights);
 
     void
     findOccupiedIndexTiles(UT_Array<bool> &isTileOccupiedList,
@@ -62,19 +62,13 @@ namespace HDK::Utilities
     {
 	UT_Interrupt *boss = UTgetInterrupt();
 
-	if (boss->opInterrupt())
-	    return;
-
 	UTparallelFor(UT_BlockedRange<exint>(0, isTileOccupiedList.size()), [&](const UT_BlockedRange<exint> &range)
 	{
+	    if (boss->opInterrupt())
+		return;
+
 	    for (exint tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
 	    {
-		if (!(tileNumber & 127))
-		{
-		    if (boss->opInterrupt())
-			return;
-		}
-
 		if (isTileOccupiedList[tileNumber])
 		    grid.field()->getLinearTile(tileNumber)->uncompress();
 	    }
@@ -208,7 +202,8 @@ namespace HDK::Utilities
 			    const PreconditionerFunctor &preconditionerFunctor,
 			    const double tolerance,
 			    const int maxIterations,
-			    const bool doProjectNullSpace = false)
+			    const bool doProjectNullSpace = false,
+			    const bool doPrintStats = true)
     {
 	double rhsNorm2 = rhs.squaredNorm();
 	if(rhsNorm2 == 0) 
@@ -218,7 +213,10 @@ namespace HDK::Utilities
 	    return;
 	}
 
-	Vector residual = rhs - matrixVectorMultiplyFunctor(solution); //initial residual
+	Vector residual(rhs.rows());
+	matrixVectorMultiplyFunctor(residual, solution); //initial residual
+
+	residual = rhs - residual;
 
 	if (doProjectNullSpace)
 	    residual.array() -= residual.sum() / double(residual.rows());
@@ -238,7 +236,8 @@ namespace HDK::Utilities
 	// Build initial search direction from preconditioner
 	//
 
-	Vector p = preconditionerFunctor(residual);
+	Vector p(rhs.rows());
+	preconditionerFunctor(p, residual);
 
 	if (doProjectNullSpace)
 	    p.array() -= p.sum() / double(p.rows());
@@ -250,7 +249,7 @@ namespace HDK::Utilities
 
 	while (iteration < maxIterations)
 	{
-   	    tmp.noalias() = matrixVectorMultiplyFunctor(p);
+   	    matrixVectorMultiplyFunctor(tmp, p);
 
 	    double alpha = absNew / p.dot(tmp);
 	    solution += alpha * p;
@@ -262,13 +261,14 @@ namespace HDK::Utilities
 	    residualNorm2 = residual.squaredNorm();
 	    if (residualNorm2 < threshold)
 		break;
-	    else std::cout << "    Relative residual: " << std::sqrt(residualNorm2 / rhsNorm2) << std::endl;
+	    else if (doPrintStats)
+		std::cout << "    Relative residual: " << std::sqrt(residualNorm2 / rhsNorm2) << std::endl;
 	    
 	    if (boss->opInterrupt())
 		return;
 
 	    // Start with the diagonal preconditioner
-	    z.noalias() = preconditionerFunctor(residual);
+	    preconditionerFunctor(z, residual);
 
 	    double absOld = absNew;
 	    absNew = residual.dot(z);     // update the absolute value of r
@@ -282,13 +282,18 @@ namespace HDK::Utilities
 	}
 
 	std::cout << "Iterations: " << iteration << std::endl;
-	std::cout << "Relative L2 Error: " << std::sqrt(residualNorm2 / rhs.squaredNorm()) << std::endl;
+    	std::cout << "L-infinity Error: " << residual.template lpNorm<Eigen::Infinity>() << std::endl;
+	if (doPrintStats)
+	{    
+	    std::cout << "Relative L2 Error: " << std::sqrt(residualNorm2 / rhs.squaredNorm()) << std::endl;
 
-	residual = rhs - matrixVectorMultiplyFunctor(solution);
-	residualNorm2 = residual.squaredNorm();
-	std::cout << "Re-computed Relative L2 Error: " << std::sqrt(residualNorm2 / rhs.squaredNorm()) << std::endl;
+	    matrixVectorMultiplyFunctor(residual, solution);
+	    residual = rhs - residual;
+	    residualNorm2 = residual.squaredNorm();
+	    std::cout << "Re-computed Relative L2 Error: " << std::sqrt(residualNorm2 / rhs.squaredNorm()) << std::endl;
 
-	std::cout << "L-infinity Error: " << residual.template lpNorm<Eigen::Infinity>() << std::endl;
+	    std::cout << "L-infinity Error: " << residual.template lpNorm<Eigen::Infinity>() << std::endl;
+	}
     }
 } // namespace HDK::Utilities
 #endif

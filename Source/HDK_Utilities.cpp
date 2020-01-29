@@ -4,7 +4,7 @@ namespace HDK::Utilities
 {
     bool isCellLiquid(const SIM_RawField &liquidSurface,
 			const SIM_RawField &solidSurface,
-			const std::array<SIM_RawField, 3> &cutCellWeights,
+			const std::array<const SIM_RawField *, 3> &cutCellWeights,
 			const UT_Vector3I &cell)
     {
 	using SIM::FieldUtils::getFieldValue;
@@ -29,7 +29,7 @@ namespace HDK::Utilities
 		{
 		    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 		    
-		    if (getFieldValue(cutCellWeights[axis], face) > 0)
+		    if (getFieldValue(*cutCellWeights[axis], face) > 0)
 		    {
 			UT_Vector3I adjacentCell = cellToCellMap(cell, axis, direction);
 
@@ -65,13 +65,13 @@ namespace HDK::Utilities
 	    if (boss->opInterrupt())
 		break;
 
-	    if (!vit.isTileConstant() || vit.getValue() == LIQUID_CELL)
+	    if (!vit.isTileConstant() || vit.getValue() == FreeSurfaceMaterialLabels::LIQUID_CELL)
 	    {
 		vitt.setTile(vit);
 
 		for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 		{
-		    if (vitt.getValue() == LIQUID_CELL)
+		    if (vitt.getValue() == FreeSurfaceMaterialLabels::LIQUID_CELL)
 		    {
 			UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 			setFieldValue(liquidCellIndices, cell, liquidCellCount++);
@@ -84,14 +84,18 @@ namespace HDK::Utilities
     }
 
     void
-    buildLiquidCellLabels(SIM_RawIndexField &materialCellLabels,
+    buildMaterialCellLabels(SIM_RawIndexField &materialCellLabels,
 			    const SIM_RawField &liquidSurface,
 			    const SIM_RawField &solidSurface,
-			    const std::array<SIM_RawField, 3> &cutCellWeights)
+			    const std::array<const SIM_RawField *, 3> &cutCellWeights)
     {
 	using SIM::FieldUtils::getFieldValue;
 	using SIM::FieldUtils::setFieldValue;
 	using SIM::FieldUtils::cellToFaceMap;
+
+	assert(materialCellLabels.isAligned(&liquidSurface));
+
+	materialCellLabels.makeConstant(FreeSurfaceMaterialLabels::SOLID_CELL);
 
 	UT_Interrupt *boss = UTgetInterrupt();
 
@@ -125,16 +129,16 @@ namespace HDK::Utilities
 			    {
 				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 
-				if (getFieldValue(cutCellWeights[axis], face) > 0)
+				if (getFieldValue(*cutCellWeights[axis], face) > 0)
 				    isInFluid = true;
 			    }
 
 			if (isInFluid)
 			{
 			    if (isCellLiquid(liquidSurface, solidSurface, cutCellWeights, cell))
-				setFieldValue(materialCellLabels, cell, LIQUID_CELL);
+				setFieldValue(materialCellLabels, cell, FreeSurfaceMaterialLabels::LIQUID_CELL);
 			    else
-				setFieldValue(materialCellLabels, cell, AIR_CELL);
+				setFieldValue(materialCellLabels, cell, FreeSurfaceMaterialLabels::AIR_CELL);
 			}
 		    }
 		}

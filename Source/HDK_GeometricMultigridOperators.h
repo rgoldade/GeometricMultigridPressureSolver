@@ -698,12 +698,11 @@ namespace HDK::GeometricMultigridOperators
 			    std::pair<SolveReal, SolveReal> laplacianResults = computeLaplacian<SolveReal>(sourceFunctor, cellLabelFunctor, boundaryWeightsFunctor, boundaryWeights != nullptr);
 
 			    SolveReal laplacian = laplacianResults.first;
-			    SolveReal diagonal = laplacianResults.second;
 
 			    if (cellLabel == CellLabels::INTERIOR_CELL)
-				assert(diagonal == 6.);
+				assert(laplacianResults.second == 6.);
 			    else
-				assert(diagonal > 0);
+				assert(laplacianResults.second > 0);
 
 			    destinationProbe.setIndex(cell[0], cell[1], cell[2]);
 			    destinationProbe.setValue(laplacian);
@@ -806,6 +805,12 @@ namespace HDK::GeometricMultigridOperators
 				    
 				    for (int xOffset = 0; xOffset < 4; ++xOffset)
 				    {
+					sampleValue += restrictionWeights[xOffset] *
+							restrictionWeights[yOffset] *
+							restrictionWeights[zOffset] *
+							SolveReal(sourceProbes[yOffset][zOffset].getValue(xOffset));
+
+#if !defined(NDEBUG)
 					UT_Vector3I sampleCell = startCell + UT_Vector3I(xOffset, yOffset, zOffset);
 
 					assert(sampleCell[0] >= 0 && sampleCell[1] >= 0 && sampleCell[2] >= 0 &&
@@ -813,12 +818,6 @@ namespace HDK::GeometricMultigridOperators
 						sampleCell[1] < source.getVoxelRes()[1] &&
 						sampleCell[2] < source.getVoxelRes()[2]);
 
-					sampleValue += restrictionWeights[xOffset] *
-							restrictionWeights[yOffset] *
-							restrictionWeights[zOffset] *
-							SolveReal(sourceProbes[yOffset][zOffset].getValue(xOffset));
-
-#if !defined(NDEBUG)
 					auto sourceLabel = sourceCellLabels(sampleCell);
 					if (sourceLabel != CellLabels::INTERIOR_CELL && sourceLabel != CellLabels::BOUNDARY_CELL)
 					    assert(sourceProbes[yOffset][zOffset].getValue(xOffset) == 0);
@@ -1553,12 +1552,12 @@ namespace HDK::GeometricMultigridOperators
 
 			    assert(expandedCellLabels(backwardCell + exteriorOffset) != CellLabels::EXTERIOR_CELL &&
 				    expandedCellLabels(forwardCell + exteriorOffset) != CellLabels::EXTERIOR_CELL);
-#endif
 
 			    UT_Vector3I expandedFace = face + exteriorOffset;
 			    assert(!expandedBoundaryWeights.getLinearTile(expandedBoundaryWeights.indexToLinearTile(expandedFace[0],
 														    expandedFace[1],
 														    expandedFace[2]))->isConstant());
+#endif
 
 			    expandedWeightsProbe.setIndex(face[0] + exteriorOffset[0],
 							    face[1] + exteriorOffset[1],
@@ -1652,14 +1651,11 @@ namespace HDK::GeometricMultigridOperators
 	UT_Interrupt *boss = UTgetInterrupt();
 	UTparallelFor(UT_BlockedRange<exint>(0, isTileOccupiedList.size()), [&](const UT_BlockedRange<exint> &range)
 	{
+	    if (boss->opInterrupt())
+		return;
+
 	    for (exint i = range.begin(); i != range.end(); ++i)
 	    {
-		if (!(i & 127))
-		{
-		    if (boss->opInterrupt())
-			return;
-		}
-
 		if (isTileOccupiedList[i])
 		    grid.getLinearTile(i)->uncompress();
 	    }
@@ -1748,10 +1744,12 @@ namespace HDK::GeometricMultigridOperators
 			if (vit.getValue() == CellLabels::INTERIOR_CELL ||
 			    vit.getValue() == CellLabels::BOUNDARY_CELL)
 			{
+#if !defined(NDEBUG)
 			    UT_Vector3I cell = UT_Vector3I(vit.x(), vit.y(), vit.z());
 
 			    assert(tileNumber == domainCellLabels.indexToLinearTile(cell[0], cell[1], cell[2]) &&
 				    tileNumber == grid.indexToLinearTile(cell[0], cell[1], cell[2]));
+#endif
 
 			    if (!isTileOccupiedList[tileNumber])
 				isTileOccupiedList[tileNumber] = true;

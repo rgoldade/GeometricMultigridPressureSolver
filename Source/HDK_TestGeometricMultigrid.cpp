@@ -1045,8 +1045,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			    assert(domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
 				    domainCellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
 
-			    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-			    assert(boundaryWeights[axis](face) == 1);
+			    assert(boundaryWeights[axis](cellToFaceMap(cell, axis, direction)) == 1);
 
 			    exint adjacentIndex = solverIndices(adjacentCell);
 			    assert(adjacentIndex >= 0);
@@ -1070,9 +1069,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			    auto adjacentCellLabel = domainCellLabels(adjacentCell);
 			    if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
 			    {
-				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-
-				assert(boundaryWeights[axis](face) == 1);
+				assert(boundaryWeights[axis](cellToFaceMap(cell, axis, direction)) == 1);
 
 				exint adjacentIndex = solverIndices(adjacentCell);
 				assert(adjacentIndex >= 0);
@@ -1093,8 +1090,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			    }
 			    else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
 			    {
-				exint adjacentIndex = solverIndices(adjacentCell);
-				assert(adjacentIndex == -1);
+				assert(solverIndices(adjacentCell) == -1);
 
 				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 				SolveReal weight = boundaryWeights[axis](face);
@@ -1104,8 +1100,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 			    else
 			    {
 				assert(adjacentCellLabel == CellLabels::EXTERIOR_CELL);
-				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-				assert(boundaryWeights[axis](face) == 0);
+				assert(boundaryWeights[axis](cellToFaceMap(cell, axis, direction)) == 0);
 			    }
 			}
 
@@ -1130,19 +1125,34 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    });
 
 	    // Solve system
-	    Eigen::SparseMatrix<StoreReal> sparseMatrix(interiorCellCount, interiorCellCount);
+	    Eigen::SparseMatrix<StoreReal, Eigen::RowMajor> sparseMatrix(interiorCellCount, interiorCellCount);
 	    sparseMatrix.setFromTriplets(sparseElements.begin(), sparseElements.end());
 	    sparseMatrix.makeCompressed();
+
+	    // Build diagonal preconditioner
+	    std::vector<Eigen::Triplet<StoreReal>> diagonalPrecondElements;
+
+	    for (exint k = 0; k < sparseMatrix.outerSize(); ++k)
+		for (typename Eigen::SparseMatrix<StoreReal, Eigen::RowMajor>::InnerIterator it(sparseMatrix, k); it; ++it)
+		{
+		    if (it.row() == it.col())
+			diagonalPrecondElements.push_back(Eigen::Triplet<StoreReal>(it.row(), it.row(), 1. / it.value()));
+		}
+
+	    Eigen::SparseMatrix<StoreReal, Eigen::RowMajor> diagonalPrecondMatrix(interiorCellCount, interiorCellCount);
+	    diagonalPrecondMatrix.setFromTriplets(diagonalPrecondElements.begin(), diagonalPrecondElements.end());
+	    diagonalPrecondMatrix.makeCompressed();
 
 	    UT_StopWatch timer;
 	    timer.start();
 
-	    Eigen::ConjugateGradient<Eigen::SparseMatrix<StoreReal>, Eigen::Upper | Eigen::Lower > solver(sparseMatrix);
-	    assert(solver.info() == Eigen::Success);
-
-	    solver.setTolerance(getSolverTolerance());
-
-	    Vector solution = solver.solve(rhs);
+	    Vector solution = Vector::Zero(interiorCellCount);
+	    HDK::Utilities::solveConjugateGradient(solution,
+						    rhs,
+						    [&sparseMatrix](Vector &destination, const Vector &source) { destination.noalias() = sparseMatrix * source; },
+						    [&diagonalPrecondMatrix](Vector &destination, const Vector &rhs) { destination.noalias() = diagonalPrecondMatrix * rhs; },
+						    getSolverTolerance(),
+						    2500);
 
 	    auto time = timer.stop();
 	    std::cout << "  CG solve time: " << time << std::endl;
@@ -1150,8 +1160,6 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	    Vector residual = sparseMatrix * solution;
 	    residual = rhs - residual;
 
-	    std::cout << "Solver iterations: " << solver.iterations() << std::endl;
-	    std::cout << "Solve error: " << solver.error() << std::endl;
 	    std::cout << "Re-computed residual: " << std::sqrt(residual.squaredNorm() / rhs.squaredNorm()) << std::endl;
 	}
     }
@@ -1359,8 +1367,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				assert(domainCellLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
 					domainCellLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
 
-				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-				assert(boundaryWeights[axis](face) == 1);
+				assert(boundaryWeights[axis](cellToFaceMap(cell, axis, direction)) == 1);
 
 				exint adjacentIndex = solverIndices(adjacentCell);
 				assert(adjacentIndex >= 0);
@@ -1384,10 +1391,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				auto adjacentCellLabel = domainCellLabels(adjacentCell);
 				if (adjacentCellLabel == CellLabels::INTERIOR_CELL)
 				{
-				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-
-				    assert(boundaryWeights[axis](face) == 1);
-
+				    assert(boundaryWeights[axis](cellToFaceMap(cell, axis, direction)) == 1);
+				
 				    exint adjacentIndex = solverIndices(adjacentCell);
 				    assert(adjacentIndex >= 0);
 
@@ -1407,8 +1412,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				}
 				else if (adjacentCellLabel == CellLabels::DIRICHLET_CELL)
 				{
-				    exint adjacentIndex = solverIndices(adjacentCell);
-				    assert(adjacentIndex == -1);
+				    assert(solverIndices(adjacentCell) == -1);
 
 				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
 				    SolveReal weight = boundaryWeights[axis](face);
@@ -1418,8 +1422,7 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 				else
 				{
 				    assert(adjacentCellLabel == CellLabels::EXTERIOR_CELL);
-				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-				    assert(boundaryWeights[axis](face) == 0);
+				    assert(boundaryWeights[axis](cellToFaceMap(cell, axis, direction)) == 0);
 				}
 			    }
 
@@ -1598,9 +1601,8 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 			    assert(adjacentCell[axis] >= 0 && adjacentCell[axis] < coarseGridSize[axis]);
 			    
-			    auto adjacentLabels = coarseDomainLabels(adjacentCell);
-			    assert(adjacentLabels == CellLabels::INTERIOR_CELL ||
-				    adjacentLabels == CellLabels::BOUNDARY_CELL);
+			    assert(coarseDomainLabels(adjacentCell) == CellLabels::INTERIOR_CELL ||
+				    coarseDomainLabels(adjacentCell) == CellLabels::BOUNDARY_CELL);
 
 			    int adjacentIndex = directSolverIndices(adjacentCell);
 			    assert(adjacentIndex >= 0);
@@ -1943,6 +1945,9 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 
 	for (int iteration = 0; iteration < 50; ++iteration)
 	{
+	    if (boss->opInterrupt())
+		break;
+
 	    mgSolver.applyVCycle(solutionGrid, rhsGrid, true /* use initial guess */);
 
 	    infNormError = infNorm(solutionGrid, domainCellLabels);
@@ -2023,8 +2028,14 @@ bool HDK_TestGeometricMultigrid::solveGasSubclass(SIM_Engine &engine,
 	SolveReal solvetime = 0;
 	SolveReal boundarySolveTime = 0;
 	SolveReal count = 0;
+
+	UT_Interrupt *boss = UTgetInterrupt();
+
 	for (; iteration < maxSmootherIterations; ++iteration)
 	{
+	    if (boss->opInterrupt())
+		break;
+
 	    for (int boundaryIteration = 0; boundaryIteration < 3; ++boundaryIteration)
 	    {
 		UT_StopWatch timer;

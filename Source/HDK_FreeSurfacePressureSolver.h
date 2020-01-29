@@ -13,6 +13,8 @@ class SIM_ScalarField;
 
 class GAS_API HDK_FreeSurfacePressureSolver : public GAS_SubSolver
 {
+    using MaterialLabels = HDK::Utilities::FreeSurfaceMaterialLabels;
+	
     using SolveReal = double;
     using Vector = Eigen::VectorXd;
 
@@ -57,26 +59,19 @@ private:
     ////////////////////////////////////////////
 
     void
-    buildValidFaces(SIM_VectorField &validFaces,
-		    const SIM_RawIndexField &materialCellLabels,
-		    const std::array<SIM_RawField, 3> &cutCellWeights) const;
-
-    void
     buildRHS(Vector &rhsVector,
-		const SIM_RawIndexField &liquidCellIndices,
-		const SIM_RawIndexField &materialCellLabels,
+		const SIM_RawIndexField &liquidCellIndices,	
+		const SIM_RawIndexField &materialCellLabels,		
 		const SIM_VectorField &velocity,
 		const SIM_VectorField *solidVelocity,
-		const SIM_VectorField &validFaces,
-		const std::array<SIM_RawField, 3> &cutCellWeights) const;
+		const std::array<const SIM_RawField *, 3> &cutCellWeights) const;
 
     void
     buildPoissonRows(std::vector<std::vector<Eigen::Triplet<SolveReal>>> &parallelPoissonElements,
-			const SIM_RawIndexField &liquidCellIndices,
-			const SIM_RawIndexField &materialCellLabels,
-			const SIM_VectorField &validFaces,
 			const SIM_RawField &liquidSurface,
-			const std::array<SIM_RawField, 3> &cutCellWeights) const;
+			const SIM_RawIndexField &liquidCellIndices,	
+			const SIM_RawIndexField &materialCellLabels,			
+			const std::array<const SIM_RawField *, 3> &cutCellWeights) const;
 
     void
     applyOldPressure(Vector &solutionVector,
@@ -84,39 +79,32 @@ private:
 			const SIM_RawIndexField &liquidCellIndices) const;
 
     void
-    buildMGBoundaryWeights(SIM_RawField &boundaryWeights,
-			    const SIM_RawField &validFaces,
-			    const SIM_RawField &liquidSurface,
-			    const SIM_RawIndexField &liquidCellIndices,
-			    const int axis) const;
-
-    void
     applySolutionToPressure(SIM_RawField &pressure,
 			    const SIM_RawIndexField &liquidCellIndices,
 			    const Vector &solutionVector) const;
 
     void
+    buildValidFaces(SIM_VectorField &validFaces,
+		    const SIM_RawIndexField &materialCellLabels,
+		    const std::array<const SIM_RawField *, 3> &cutCellWeights) const;
+
+    void
     applyPressureGradient(SIM_RawField &velocity,
-			    const SIM_RawField &validFaces,
-			    const SIM_RawField &pressure,
-			    const SIM_RawField &liquidSurface,
 			    const SIM_RawField &cutCellWeights,
+			    const SIM_RawField &liquidSurface,
+			    const SIM_RawField &pressure,			    
+			    const SIM_RawField &validFaces,
 			    const SIM_RawIndexField &liquidCellIndices,
 			    const int axis) const;
 
     void
-    buildDebugDivergence(UT_VoxelArray<SolveReal> &debugDivergenceGrid,
-			    const SIM_RawIndexField &materialCellLabels,
-			    const SIM_VectorField &velocity,
-			    const SIM_VectorField *solidVelocity,
-			    const SIM_VectorField &validFaces,
-			    const std::array<SIM_RawField, 3> &cutCellWeights) const;
-
-    void
-    buildMaxAndSumGrid(UT_Array<SolveReal> &tiledMaxDivergenceList,
-			UT_Array<SolveReal> &tiledSumDivergenceList,
-			const UT_VoxelArray<SolveReal> &debugDivergenceGrid,
-			const SIM_RawIndexField &materialCellLabels) const;    
+    computeResultingDivergence(UT_Array<SolveReal> &parallelAccumulatedDivergence,
+				UT_Array<SolveReal> &parallelCellCount,	
+				UT_Array<SolveReal> &parallelMaxDivergence,				
+				const SIM_RawIndexField &materialCellLabels,
+				const SIM_VectorField &velocity,
+				const SIM_VectorField *solidVelocity,
+				const std::array<const SIM_RawField *, 3> &cutCellWeights) const;
 };
 
 #endif

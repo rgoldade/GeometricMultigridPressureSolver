@@ -142,9 +142,9 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
         return false;
     }
     
-    std::array<SIM_RawField, 3> cutCellWeights;
+    std::array<const SIM_RawField *, 3> cutCellWeights;
     for (int axis : {0, 1, 2})
-	cutCellWeights[axis] = *(cutCellWeightsField->getField(axis));
+	cutCellWeights[axis] = cutCellWeightsField->getField(axis);
 
     // Load valid fluid faces
 
@@ -265,9 +265,8 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	liquidCellIndices.makeConstant(HDK::Utilities::UNLABELLED_CELL);
 
     	materialCellLabels.match(liquidSurface);
-	materialCellLabels.makeConstant(HDK::Utilities::UNLABELLED_CELL);
 
-	HDK::Utilities::buildLiquidCellLabels(materialCellLabels,
+	HDK::Utilities::buildMaterialCellLabels(materialCellLabels,
 						liquidSurface,
 						*solidSurface,
 						cutCellWeights);
@@ -288,21 +287,6 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 
     ////////////////////////////////////////////
     //
-    // Build valid faces to indicate active velocity elements
-    //
-    ////////////////////////////////////////////
-
-    {
-    	std::cout << "\n// Build valid flags" << std::endl;
-    	UT_PerfMonAutoSolveEvent event(this, "Build valid flags");
-
-    	buildValidFaces(*validFaces,
-			materialCellLabels,
-			cutCellWeights);
-    }
-
-    ////////////////////////////////////////////
-    //
     // Build right-hand-side for liquid degrees of freedom using the 
     // cut-cell method to account for moving solids.
     //
@@ -315,13 +299,15 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
     	UT_PerfMonAutoSolveEvent event(this, "Build liquid right-hand side");
 
     	buildRHS(rhsVector,
-		    liquidCellIndices,
-		    materialCellLabels,
+    		    liquidCellIndices,
+    		    materialCellLabels,		    
 		    *velocity,
 		    solidVelocity,
-		    *validFaces,
 		    cutCellWeights);
     }
+
+    // TODO: project out null space if there are no free surface cels.
+    // This is important for smoke simulations.
 
     ////////////////////////////////////////////
     //
@@ -340,10 +326,9 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	std::vector<std::vector<Eigen::Triplet<SolveReal>>> parallelPoissonElements(threadCount);
 
     	buildPoissonRows(parallelPoissonElements,
-			    liquidCellIndices,
-			    materialCellLabels,
-			    *validFaces,
 			    liquidSurface,
+			    liquidCellIndices,
+			    materialCellLabels,			    
 			    cutCellWeights);
 
 	exint listSize = 0;
@@ -378,37 +363,13 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	std::cout << "\n// Solve liquid system" << std::endl;
 	UT_PerfMonAutoSolveEvent event(this, "Solve linear system");
 
-	Eigen::SparseMatrix<SolveReal, Eigen::RowMajor> poissonMatrix(liquidCellCount, liquidCellCount);
+	Eigen::SparseMatrix<SolveReal> poissonMatrix(liquidCellCount, liquidCellCount);
 	poissonMatrix.setFromTriplets(poissonElements.begin(), poissonElements.end());
 	poissonMatrix.makeCompressed();
 	
-#if !defined(NDEBUG)
-
-	std::cout << "\n    Checking symmetry of system" << std::endl;
-	for (int k = 0; k < poissonMatrix.outerSize(); ++k)
-	    for (typename Eigen::SparseMatrix<SolveReal, Eigen::RowMajor>::InnerIterator it(poissonMatrix, k); it; ++it)
-	    {
-		if (!SYSisEqual(poissonMatrix.coeff(it.row(), it.col()), poissonMatrix.coeff(it.col(), it.row())))
-		{
-		    std::cout << "Value at row " << it.row() << ", col " << it.col() << " is " << poissonMatrix.coeff(it.row(), it.col()) << std::endl;
-		    std::cout << "Value at row " << it.col() << ", col " << it.row() << " is " << poissonMatrix.coeff(it.col(), it.row()) << std::endl;
-		    assert(false);
-		}
-	    }
-    
-	// Check that it's finite
-	std::cout << "    Check for NaNs\n" << std::endl;
-	for (int k = 0; k < poissonMatrix.outerSize(); ++k)
-	    for (typename Eigen::SparseMatrix<SolveReal, Eigen::RowMajor>::InnerIterator it(poissonMatrix, k); it; ++it)
-	    {
-		if (!std::isfinite(it.value()))
-		    assert(false);
-	    }
-#endif
-
-	Eigen::ConjugateGradient<Eigen::SparseMatrix<SolveReal, Eigen::RowMajor>, Eigen::Lower | Eigen::Upper> solver;
-	solver.setTolerance(getSolverTolerance());
+	Eigen::ConjugateGradient<Eigen::SparseMatrix<SolveReal>, Eigen::Lower | Eigen::Upper> solver;
 	solver.compute(poissonMatrix);
+    	solver.setTolerance(getSolverTolerance());
 
 	solutionVector = solver.solveWithGuess(rhsVector, solutionVector);
 	
@@ -416,7 +377,7 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 
 	std::cout << "Solver iterations: " << solver.iterations() << std::endl;
 	std::cout << "Solver error: " << solver.error() << std::endl;
-	std::cout << " Recomputed relative residual: " << std::sqrt(residualVector.squaredNorm() / rhsVector.squaredNorm()) << std::endl;
+	std::cout << "Recomputed relative residual: " << std::sqrt(residualVector.squaredNorm() / rhsVector.squaredNorm()) << std::endl;
     }
 
     ////////////////////////////////////////////
@@ -435,6 +396,27 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	applySolutionToPressure(*pressure, liquidCellIndices, solutionVector);
     }
 
+    ////////////////////////////////////////////
+    //
+    // Build valid faces to indicate active velocity elements
+    //
+    ////////////////////////////////////////////
+
+    {
+    	std::cout << "\n// Build valid flags" << std::endl;
+    	UT_PerfMonAutoSolveEvent event(this, "Build valid flags");
+
+    	buildValidFaces(*validFaces,
+			materialCellLabels,
+			cutCellWeights);
+    }
+
+    ////////////////////////////////////////////
+    //
+    // Apply pressure gradient to velocity field
+    //
+    ////////////////////////////////////////////
+
     {
 	std::cout << "\n// Update velocity from pressure gradient" << std::endl;
 	UT_PerfMonAutoSolveEvent event(this, "Update velocity from pressure gradient");
@@ -442,54 +424,54 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 	for (int axis : {0,1,2})
 	{
 	    applyPressureGradient(*velocity->getField(axis),
-				    *validFaces->getField(axis),
-				    *pressure,
+				    *cutCellWeights[axis],
 				    liquidSurface,
-				    cutCellWeights[axis],
+				    *pressure,
+				    *validFaces->getField(axis),
 				    liquidCellIndices,
 				    axis);
 	}
     }
 
     {
-	// Check divergence
-	UT_VoxelArray<SolveReal> debugDivergenceGrid;
-	debugDivergenceGrid.size(materialCellLabels.getVoxelRes()[0], materialCellLabels.getVoxelRes()[1], materialCellLabels.getVoxelRes()[2]);
-	debugDivergenceGrid.constant(0);
+	UT_PerfMonAutoSolveEvent event(this, "Verify divergence-free constraint");
+	std::cout << "\n// Verify divergence-free constraint" << std::endl;
 
-	buildDebugDivergence(debugDivergenceGrid,
-				materialCellLabels,
-				*velocity,
-				solidVelocity,
-				*validFaces,
-				cutCellWeights);
+	UT_Array<SolveReal> parallelAccumulatedDivergence;
+	parallelAccumulatedDivergence.setSize(threadCount);
+	parallelAccumulatedDivergence.constant(0);
 
-	UT_Array<SolveReal> tiledMaxDivergenceList;
-	tiledMaxDivergenceList.setSize(materialCellLabels.field()->numTiles());
-	tiledMaxDivergenceList.constant(0);
+	UT_Array<SolveReal> parallelMaxDivergence;
+	parallelMaxDivergence.setSize(threadCount);
+	parallelMaxDivergence.constant(0);
 
-	UT_Array<SolveReal> tiledSumDivergenceList;
-	tiledSumDivergenceList.setSize(materialCellLabels.field()->numTiles());
-	tiledSumDivergenceList.constant(0);
+	UT_Array<SolveReal> parallelCellCount;
+	parallelCellCount.setSize(threadCount);
+	parallelCellCount.constant(0);
 
-	buildMaxAndSumGrid(tiledMaxDivergenceList,
-			    tiledSumDivergenceList,
-			    debugDivergenceGrid,
-			    materialCellLabels);
+	computeResultingDivergence(parallelAccumulatedDivergence,
+				    parallelCellCount,
+				    parallelMaxDivergence,
+				    materialCellLabels,
+				    *velocity,
+				    solidVelocity,
+				    cutCellWeights);
 
+	SolveReal accumulatedDivergence = 0;
 	SolveReal maxDivergence = 0;
-	SolveReal sumDivergence = 0;
-	for (int tile = 0; tile < materialCellLabels.field()->numTiles(); ++tile)
+	SolveReal cellCount = 0;
+
+	for (int thread = 0; thread < threadCount; ++thread)
 	{
-	    if (fabs(tiledMaxDivergenceList[tile]) > fabs(maxDivergence))
-		maxDivergence = tiledMaxDivergenceList[tile];
-	    sumDivergence += tiledSumDivergenceList[tile];
+	    accumulatedDivergence += parallelAccumulatedDivergence[thread];
+	    maxDivergence = std::max(maxDivergence, parallelMaxDivergence[thread]);
+	    cellCount += parallelCellCount[thread];
 	}
 
-	std::cout << "  L-infinity divergence: " << maxDivergence << std::endl;
-	std::cout << "  Sum divergence: " << sumDivergence << std::endl;
+	std::cout << "    Max divergence: " << maxDivergence << std::endl;
+	std::cout << "    Accumulated divergence: " << accumulatedDivergence << std::endl;
+	std::cout << "    Average divergence: " << accumulatedDivergence / cellCount << std::endl;
     }
-
 
     pressureField->pubHandleModification();
     velocity->pubHandleModification();
@@ -500,12 +482,11 @@ HDK_FreeSurfacePressureSolver::solveGasSubclass(SIM_Engine &engine,
 
 void
 HDK_FreeSurfacePressureSolver::buildRHS(Vector &rhsVector,
-					const SIM_RawIndexField &liquidCellIndices,
-					const SIM_RawIndexField &materialCellLabels,
+					const SIM_RawIndexField &liquidCellIndices,	
+					const SIM_RawIndexField &materialCellLabels,					
 					const SIM_VectorField &velocity,
 					const SIM_VectorField *solidVelocity,
-					const SIM_VectorField &validFaces,
-					const std::array<SIM_RawField, 3> &cutCellWeights) const
+					const std::array<const SIM_RawField *, 3> &cutCellWeights) const
 {
     using SIM::FieldUtils::cellToFaceMap;
     using SIM::FieldUtils::getFieldValue;
@@ -517,8 +498,6 @@ HDK_FreeSurfacePressureSolver::buildRHS(Vector &rhsVector,
 	UT_VoxelArrayIteratorI vit;
 	vit.setConstArray(liquidCellIndices.field());
 
-	UT_VoxelTileIteratorI vitt;
-
 	if (boss->opInterrupt())
 	    return;
 
@@ -527,48 +506,40 @@ HDK_FreeSurfacePressureSolver::buildRHS(Vector &rhsVector,
 	    vit.myTileStart = tileNumber;
 	    vit.myTileEnd = tileNumber + 1;
 	    vit.rewind();
-
-	    if (!vit.atEnd())
+		
+	    if (!vit.isTileConstant())
 	    {
-		if (!vit.isTileConstant())
+		for (; !vit.atEnd(); vit.advance())
 		{
-		    vitt.setTile(vit);
-
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		    exint liquidIndex = vit.getValue();
+		    if (liquidIndex >= 0)
 		    {
-			exint liquidIndex = vitt.getValue();
-			if (liquidIndex >= 0)
-			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+			UT_Vector3I cell(vit.x(), vit.y(), vit.z());
 
-			    assert(getFieldValue(materialCellLabels, cell) == HDK::Utilities::LIQUID_CELL);
+			assert(getFieldValue(materialCellLabels, cell) == MaterialLabels::LIQUID_CELL);
 
-			    fpreal divergence = 0;
+			SolveReal divergence = 0;
 
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
+			for (int axis : {0,1,2})
+			    for (int direction : {0,1})
+			    {
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+
+				SolveReal sign = (direction == 0) ? 1. : -1.;
+				SolveReal weight = getFieldValue(*cutCellWeights[axis], face);
+
+				if (weight > 0)
+				    divergence += sign * weight * getFieldValue(*velocity.getField(axis), face);
+				if (solidVelocity != nullptr && weight < 1)
 				{
-				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				    UT_Vector3 point;
+				    velocity.getField(axis)->indexToPos(face[0], face[1], face[2], point);
 
-				    fpreal sign = (direction % 2 == 0) ? 1. : -1.;
-				    fpreal weight = getFieldValue(cutCellWeights[axis], face);
-
-				    if (weight > 0)
-				    {
-					divergence += sign * weight * getFieldValue(*velocity.getField(axis), face);
-					assert(getFieldValue(*validFaces.getField(axis), face) == HDK::Utilities::VALID_FACE);
-				    }
-				    if (solidVelocity != nullptr && weight < 1)
-				    {
-					UT_Vector3 point;
-					velocity.getField(axis)->indexToPos(face[0], face[1], face[2], point);
-
-					divergence += sign * (1. - weight) * solidVelocity->getField(axis)->getValue(point);
-				    }
+				    divergence += sign * (1. - weight) * solidVelocity->getField(axis)->getValue(point);
 				}
+			    }
 
-			    rhsVector(liquidIndex) = divergence;
-			}
+			rhsVector(liquidIndex) = divergence;
 		    }
 		}
 	    }
@@ -578,11 +549,10 @@ HDK_FreeSurfacePressureSolver::buildRHS(Vector &rhsVector,
 
 void
 HDK_FreeSurfacePressureSolver::buildPoissonRows(std::vector<std::vector<Eigen::Triplet<SolveReal>>> &parallelPoissonElements,
-						const SIM_RawIndexField &liquidCellIndices,
-						const SIM_RawIndexField &materialCellLabels,
-						const SIM_VectorField &validFaces,
 						const SIM_RawField &liquidSurface,
-						const std::array<SIM_RawField, 3> &cutCellWeights) const
+						const SIM_RawIndexField &liquidCellIndices,	
+						const SIM_RawIndexField &materialCellLabels,						
+						const std::array<const SIM_RawField *, 3> &cutCellWeights) const
 {
     using SIM::FieldUtils::cellToFaceMap;
     using SIM::FieldUtils::cellToCellMap;
@@ -622,7 +592,7 @@ HDK_FreeSurfacePressureSolver::buildPoissonRows(std::vector<std::vector<Eigen::T
 			assert(getFieldValue(materialCellLabels, cell) == HDK::Utilities::LIQUID_CELL);
 
 			// Build non-zeros for each liquid voxel row
-			fpreal poissonDiagonal = 0.;
+			SolveReal poissonDiagonal = 0.;
 			for (int axis : {0,1,2})
 			    for (int direction : {0,1})
 			    {
@@ -632,41 +602,37 @@ HDK_FreeSurfacePressureSolver::buildPoissonRows(std::vector<std::vector<Eigen::T
 				    continue;
 
 				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
-				fpreal weight = getFieldValue(cutCellWeights[axis], face);
+				SolveReal weight = getFieldValue(*cutCellWeights[axis], face);
 
 				if (weight > 0)
 				{
-				    assert(getFieldValue(*validFaces.getField(axis), face) == HDK::Utilities::VALID_FACE);
 				    assert(weight > 0);
 				
 				    exint adjacentLiquidIndex = getFieldValue(liquidCellIndices, adjacentCell);
 
 				    if (adjacentLiquidIndex >= 0)
 				    {
-					assert(getFieldValue(materialCellLabels, adjacentCell) == HDK::Utilities::LIQUID_CELL);
+					assert(getFieldValue(materialCellLabels, adjacentCell) == MaterialLabels::LIQUID_CELL);
 					poissonDiagonal += weight;
 					localPoissonElements.push_back(Eigen::Triplet<SolveReal>(liquidIndex, adjacentLiquidIndex, -weight));
 				    }
 				    else
 				    {
-					fpreal phi0 = getFieldValue(liquidSurface, cell);
-					fpreal phi1 = getFieldValue(liquidSurface, adjacentCell);
+					SolveReal phi0 = getFieldValue(liquidSurface, cell);
+					SolveReal phi1 = getFieldValue(liquidSurface, adjacentCell);
 
 					assert(phi1 > 0);
-					assert(getFieldValue(materialCellLabels, adjacentCell) == HDK::Utilities::AIR_CELL);
+					assert(getFieldValue(materialCellLabels, adjacentCell) == MaterialLabels::AIR_CELL);
 
-					fpreal theta = HDK::Utilities::computeGhostFluidWeight(phi0, phi1);
+					SolveReal theta = HDK::Utilities::computeGhostFluidWeight(phi0, phi1);
 					theta = SYSclamp(theta, .01, 1.);
 
 					poissonDiagonal += weight / theta;
 				    }
 				}
-				else
-				    assert(getFieldValue(*validFaces.getField(axis), face) == HDK::Utilities::INVALID_FACE);
 			    }
 
 			assert(poissonDiagonal > 0.);
-
 			localPoissonElements.push_back(Eigen::Triplet<SolveReal>(liquidIndex, liquidIndex, poissonDiagonal));
 		    }
 		}
@@ -691,8 +657,6 @@ HDK_FreeSurfacePressureSolver::applyOldPressure(Vector &solutionVector,
 	UT_VoxelArrayIteratorI vit;
 	vit.setConstArray(liquidCellIndices.field());
 
-	UT_VoxelTileIteratorI vitt;
-
 	if (boss->opInterrupt())
 	    return;
 	 
@@ -702,98 +666,16 @@ HDK_FreeSurfacePressureSolver::applyOldPressure(Vector &solutionVector,
 	    vit.myTileEnd = tileNumber + 1;
 	    vit.rewind();
 
-	    if (!vit.atEnd())
+	    if (!vit.isTileConstant())
 	    {
-		if (!vit.isTileConstant())
+		for (; !vit.atEnd(); vit.advance())
 		{
-		    vitt.setTile(vit);
+		    exint liquidIndex = vit.getValue();
 
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		    if (liquidIndex >= 0)
 		    {
-			exint liquidIndex = vitt.getValue();
-
-			if (liquidIndex >= 0)
-			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-			    solutionVector(liquidIndex) = getFieldValue(pressure, cell);
-			}
-		    }
-		}
-	    }
-	}
-    });
-}
-
-void
-HDK_FreeSurfacePressureSolver::buildMGBoundaryWeights(SIM_RawField &boundaryWeights,
-							const SIM_RawField &validFaces,
-							const SIM_RawField &liquidSurface,
-							const SIM_RawIndexField &liquidCellIndices,
-							const int axis) const
-{
-    using SIM::FieldUtils::setFieldValue;
-    using SIM::FieldUtils::getFieldValue;
-    using SIM::FieldUtils::faceToCellMap;
-
-    UT_Interrupt *boss = UTgetInterrupt();
-
-    UT_Vector3I voxelRes = liquidCellIndices.getVoxelRes();
-
-    UTparallelForEachNumber(validFaces.field()->numTiles(), [&](const UT_BlockedRange<int> &range)
-    {
-	UT_VoxelArrayIteratorF vit;
-	vit.setConstArray(validFaces.field());
-
-	UT_VoxelTileIteratorF vitt;
-
-	if (boss->opInterrupt())
-	    return;
-	 
-	for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
-	{
-	    vit.myTileStart = tileNumber;
-	    vit.myTileEnd = tileNumber + 1;
-	    vit.rewind();
-
-	    if (!vit.atEnd())
-	    {
-		if (!vit.isTileConstant() || vit.getValue() == HDK::Utilities::VALID_FACE)
-		{
-		    vitt.setTile(vit);
-
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-		    {	      
-			if (vitt.getValue() == HDK::Utilities::VALID_FACE)
-			{
-			    UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
-
-			    UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
-			    UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
-
-			    if (backwardCell[axis] < 0 || forwardCell[axis] >= voxelRes[axis])
-			    {
-				setFieldValue(boundaryWeights, face, 0);
-				continue;
-			    }
-
-			    exint backwardIndex = getFieldValue(liquidCellIndices, backwardCell);
-			    exint forwardIndex = getFieldValue(liquidCellIndices, forwardCell);
-
-			    assert(backwardIndex >= 0 || forwardIndex >= 0);
-			    assert(getFieldValue(boundaryWeights, face) > 0);
-
-			    if (backwardIndex == HDK::Utilities::UNLABELLED_CELL ||
-				forwardIndex == HDK::Utilities::UNLABELLED_CELL)
-			    {
-				fpreal backwardPhi = getFieldValue(liquidSurface, backwardCell);
-				fpreal forwardPhi = getFieldValue(liquidSurface, forwardCell);
-
-				fpreal theta = HDK::Utilities::computeGhostFluidWeight(backwardPhi, forwardPhi);
-				theta = SYSclamp(theta, .01, 1.);
-
-				setFieldValue(boundaryWeights, face, getFieldValue(boundaryWeights, face) / theta);
-			    }
-			}
+			UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			solutionVector(liquidIndex) = getFieldValue(pressure, cell);
 		    }
 		}
 	    }
@@ -815,8 +697,6 @@ HDK_FreeSurfacePressureSolver::applySolutionToPressure(SIM_RawField &pressure,
 	UT_VoxelArrayIteratorI vit;
 	vit.setConstArray(liquidCellIndices.field());
 
-	UT_VoxelTileIteratorI vitt;
-
 	if (boss->opInterrupt())
 	    return;
 	 
@@ -826,21 +706,16 @@ HDK_FreeSurfacePressureSolver::applySolutionToPressure(SIM_RawField &pressure,
 	    vit.myTileEnd = tileNumber + 1;
 	    vit.rewind();
 
-	    if (!vit.atEnd())
+	    if (!vit.isTileConstant())
 	    {
-		if (!vit.isTileConstant())
+		for (; !vit.atEnd(); vit.advance())
 		{
-		    vitt.setTile(vit);
+		    exint liquidIndex = vit.getValue();
 
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		    if (liquidIndex >= 0)
 		    {
-			exint liquidIndex = vitt.getValue();
-
-			if (liquidIndex >= 0)
-			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-			    setFieldValue(pressure, cell, solutionVector(liquidIndex));
-			}
+			UT_Vector3I cell(vit.x(), vit.y(), vit.z());
+			setFieldValue(pressure, cell, solutionVector(liquidIndex));
 		    }
 		}
 	    }
@@ -851,7 +726,7 @@ HDK_FreeSurfacePressureSolver::applySolutionToPressure(SIM_RawField &pressure,
 void
 HDK_FreeSurfacePressureSolver::buildValidFaces(SIM_VectorField &validFaces,
 						const SIM_RawIndexField &materialCellLabels,
-						const std::array<SIM_RawField, 3> &cutCellWeights) const
+						const std::array<const SIM_RawField *, 3> &cutCellWeights) const
 {
     UT_Array<bool> isTileOccupiedList;
     for (int axis : {0,1,2})
@@ -865,25 +740,25 @@ HDK_FreeSurfacePressureSolver::buildValidFaces(SIM_VectorField &validFaces,
 	HDK::Utilities::findOccupiedFaceTiles(isTileOccupiedList,
 						*validFaces.getField(axis),
 						materialCellLabels,
-						[](const exint label){ return label == HDK::Utilities::LIQUID_CELL; },
+						[](const exint label){ return label == MaterialLabels::LIQUID_CELL; },
 						axis);
 
 	HDK::Utilities::uncompressTiles(*validFaces.getField(axis), isTileOccupiedList);
 
 	HDK::Utilities::classifyValidFaces(*validFaces.getField(axis),
 					    materialCellLabels,
-					    cutCellWeights[axis],
-					    [](const exint label){ return label == HDK::Utilities::LIQUID_CELL; },
+					    *cutCellWeights[axis],
+					    [](const exint label){ return label == MaterialLabels::LIQUID_CELL; },
 					    axis);
     }
 }
 
 void
 HDK_FreeSurfacePressureSolver::applyPressureGradient(SIM_RawField &velocity,
-							const SIM_RawField &validFaces,
+							const SIM_RawField &cutCellWeights,	
+							const SIM_RawField &liquidSurface,	
 							const SIM_RawField &pressure,
-							const SIM_RawField &liquidSurface,
-							const SIM_RawField &cutCellWeights,
+							const SIM_RawField &validFaces,					
 							const SIM_RawIndexField &liquidCellIndices,
 							const int axis) const
 {
@@ -900,8 +775,6 @@ HDK_FreeSurfacePressureSolver::applyPressureGradient(SIM_RawField &velocity,
 	UT_VoxelArrayIteratorF vit;
 	vit.setConstArray(validFaces.field());
 
-	UT_VoxelTileIteratorF vitt;
-
 	if (boss->opInterrupt())
 	    return;
 	 
@@ -911,46 +784,41 @@ HDK_FreeSurfacePressureSolver::applyPressureGradient(SIM_RawField &velocity,
 	    vit.myTileEnd = tileNumber + 1;
 	    vit.rewind();
 
-	    if (!vit.atEnd())
+	    if (!vit.isTileConstant() || vit.getValue() == HDK::Utilities::VALID_FACE)
 	    {
-		if (!vit.isTileConstant() || vit.getValue() == HDK::Utilities::VALID_FACE)
-		{
-		    vitt.setTile(vit);
+		for (; !vit.atEnd(); vit.advance())
+		{	      
+		    if (vit.getValue() == HDK::Utilities::VALID_FACE)
+		    {
+			UT_Vector3I face(vit.x(), vit.y(), vit.z());
 
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-		    {	      
-			if (vitt.getValue() == HDK::Utilities::VALID_FACE)
+			UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
+			UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
+
+			if (backwardCell[axis] < 0 || forwardCell[axis] >= voxelRes[axis])
+			    continue;
+
+			exint backwardIndex = getFieldValue(liquidCellIndices, backwardCell);
+			exint forwardIndex = getFieldValue(liquidCellIndices, forwardCell);
+
+			assert(backwardIndex >= 0 || forwardIndex >= 0);
+			assert(getFieldValue(cutCellWeights, face) > 0);
+
+			SolveReal gradient = getFieldValue(pressure, forwardCell) - getFieldValue(pressure, backwardCell);
+
+			if (backwardIndex == HDK::Utilities::UNLABELLED_CELL ||
+			    forwardIndex == HDK::Utilities::UNLABELLED_CELL)
 			{
-			    UT_Vector3I face(vitt.x(), vitt.y(), vitt.z());
+			    SolveReal backwardPhi = getFieldValue(liquidSurface, backwardCell);
+			    SolveReal forwardPhi = getFieldValue(liquidSurface, forwardCell);
 
-			    UT_Vector3I backwardCell = faceToCellMap(face, axis, 0);
-			    UT_Vector3I forwardCell = faceToCellMap(face, axis, 1);
+			    SolveReal theta = HDK::Utilities::computeGhostFluidWeight(backwardPhi, forwardPhi);
+			    theta = SYSclamp(theta, .01, 1.);
 
-			    if (backwardCell[axis] < 0 || forwardCell[axis] >= voxelRes[axis])
-				continue;
-
-			    exint backwardIndex = getFieldValue(liquidCellIndices, backwardCell);
-			    exint forwardIndex = getFieldValue(liquidCellIndices, forwardCell);
-
-			    assert(backwardIndex >= 0 || forwardIndex >= 0);
-			    assert(getFieldValue(cutCellWeights, face) > 0);
-
-			    fpreal gradient = getFieldValue(pressure, forwardCell) - getFieldValue(pressure, backwardCell);
-
-			    if (backwardIndex == HDK::Utilities::UNLABELLED_CELL ||
-				forwardIndex == HDK::Utilities::UNLABELLED_CELL)
-			    {
-				fpreal backwardPhi = getFieldValue(liquidSurface, backwardCell);
-				fpreal forwardPhi = getFieldValue(liquidSurface, forwardCell);
-
-				fpreal theta = HDK::Utilities::computeGhostFluidWeight(backwardPhi, forwardPhi);
-				theta = SYSclamp(theta, .01, 1.);
-
-				gradient /= theta;
-			    }
-
-			    setFieldValue(velocity, face, getFieldValue(velocity, face) - gradient);
+			    gradient /= theta;
 			}
+
+			setFieldValue(velocity, face, getFieldValue(velocity, face) - gradient);
 		    }
 		}
 	    }
@@ -959,139 +827,78 @@ HDK_FreeSurfacePressureSolver::applyPressureGradient(SIM_RawField &velocity,
 }
 
 void
-HDK_FreeSurfacePressureSolver::buildDebugDivergence(UT_VoxelArray<SolveReal> &debugDivergenceGrid,
-						    const SIM_RawIndexField &materialCellLabels,
-						    const SIM_VectorField &velocity,
-						    const SIM_VectorField *solidVelocity,
-						    const SIM_VectorField &validFaces,
-						    const std::array<SIM_RawField, 3> &cutCellWeights) const
+HDK_FreeSurfacePressureSolver::computeResultingDivergence(UT_Array<SolveReal> &parallelAccumulatedDivergence,
+							    UT_Array<SolveReal> &parallelCellCount,
+							    UT_Array<SolveReal> &parallelMaxDivergence,							    
+							    const SIM_RawIndexField &materialCellLabels,
+							    const SIM_VectorField &velocity,
+							    const SIM_VectorField *solidVelocity,
+							    const std::array<const SIM_RawField *, 3> &cutCellWeights) const
 {
+    using SIM::FieldUtils::cellToCellMap;
     using SIM::FieldUtils::cellToFaceMap;
     using SIM::FieldUtils::getFieldValue;
 
-    // Pre-expand all tiles that correspond to INTERIOR or BOUNDARY domain labels
-    assert(debugDivergenceGrid.getVoxelRes() == materialCellLabels.getVoxelRes());
-
     UT_Interrupt *boss = UTgetInterrupt();
 
-    UTparallelForEachNumber(materialCellLabels.field()->numTiles(), [&](const UT_BlockedRange<int> &range)
+    UT_ThreadedAlgorithm computeResultingDivergenceAlgorithm;
+    computeResultingDivergenceAlgorithm.run([&](const UT_JobInfo &info)
     {
 	UT_VoxelArrayIteratorI vit;
 	vit.setConstArray(materialCellLabels.field());
+	vit.splitByTile(info);
 
 	UT_VoxelTileIteratorI vitt;
 
-	if (boss->opInterrupt())
-	    return;
+	SolveReal &localAccumulatedDivergence = parallelAccumulatedDivergence[info.job()];
+	SolveReal &localMaxDivergence = parallelMaxDivergence[info.job()];
+	SolveReal &localCellCount = parallelCellCount[info.job()];
 
-	for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
+	for (vit.rewind(); !vit.atEnd(); vit.advanceTile())
 	{
-	    vit.myTileStart = tileNumber;
-	    vit.myTileEnd = tileNumber + 1;
-	    vit.rewind();
+	    if (boss->opInterrupt())
+		return 0;
 
-	    if (!vit.atEnd())
+	    if (!vit.isTileConstant() ||
+		vit.getValue() == MaterialLabels::LIQUID_CELL)
 	    {
-		if (!vit.isTileConstant() ||
-		    vit.getValue() == HDK::Utilities::LIQUID_CELL)
+		vitt.setTile(vit);
+
+		for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
 		{
-		    vitt.setTile(vit);
-
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
+		    if (vitt.getValue() == MaterialLabels::LIQUID_CELL)
 		    {
-			if (vitt.getValue() == HDK::Utilities::LIQUID_CELL)
-			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
+			UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
 
-			    fpreal divergence = 0;
+			SolveReal divergence = 0;
 
-			    for (int axis : {0,1,2})
-				for (int direction : {0,1})
+			for (int axis : {0,1,2})
+			    for (int direction : {0,1})
+			    {
+				UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				SolveReal weight = getFieldValue(*cutCellWeights[axis], face);
+
+				SolveReal sign = (direction == 0) ? -1 : 1;
+
+				if (weight > 0)
+				    divergence += sign * weight * getFieldValue(*velocity.getField(axis), face);
+				if (solidVelocity != nullptr && weight < 1)
 				{
-				    UT_Vector3I face = cellToFaceMap(cell, axis, direction);
+				    UT_Vector3 point;
+				    velocity.getField(axis)->indexToPos(face[0], face[1], face[2], point);
 
-				    fpreal sign = (direction % 2 == 0) ? 1. : -1.;
-				    fpreal weight = getFieldValue(cutCellWeights[axis], face);
-
-				    if (weight > 0)
-				    {
-					divergence += sign * weight * getFieldValue(*velocity.getField(axis), face);
-					assert(getFieldValue(*validFaces.getField(axis), face) == HDK::Utilities::VALID_FACE);
-				    }
-				    if (solidVelocity != nullptr && weight < 1)
-				    {
-					UT_Vector3 point;
-					velocity.getField(axis)->indexToPos(face[0], face[1], face[2], point);
-
-					divergence += sign * (1. - weight) * solidVelocity->getField(axis)->getValue(point);
-				    }
+				    divergence += sign * (1. - weight) * solidVelocity->getField(axis)->getValue(point);
 				}
+			    }
 
-			    debugDivergenceGrid.setValue(cell, divergence);
-			}
+			localAccumulatedDivergence += divergence;
+			localMaxDivergence = std::max(localMaxDivergence, divergence);
+			++localCellCount;
 		    }
 		}
 	    }
 	}
-    });  
-}
 
-void
-HDK_FreeSurfacePressureSolver::buildMaxAndSumGrid(UT_Array<SolveReal> &tiledMaxDivergenceList,
-						    UT_Array<SolveReal> &tiledSumDivergenceList,
-						    const UT_VoxelArray<SolveReal> &debugDivergenceGrid,
-						    const SIM_RawIndexField &materialCellLabels) const
-{
-    // Pre-expand all tiles that correspond to INTERIOR or BOUNDARY domain labels
-    assert(debugDivergenceGrid.getVoxelRes() == materialCellLabels.getVoxelRes());
-
-    UT_Interrupt *boss = UTgetInterrupt();
-
-    UTparallelForEachNumber(materialCellLabels.field()->numTiles(), [&](const UT_BlockedRange<int> &range)
-    {
-	UT_VoxelArrayIteratorI vit;
-	vit.setConstArray(materialCellLabels.field());
-
-	UT_VoxelTileIteratorI vitt;
-
-	if (boss->opInterrupt())
-	    return;
-
-	for (int tileNumber = range.begin(); tileNumber != range.end(); ++tileNumber)
-	{
-	    vit.myTileStart = tileNumber;
-	    vit.myTileEnd = tileNumber + 1;
-	    vit.rewind();
-
-	    SolveReal localMaxValue = 0;
-	    SolveReal localSumValue = 0;
-
-	    if (!vit.atEnd())
-	    {
-		if (!vit.isTileConstant() ||
-		    vit.getValue() == HDK::Utilities::LIQUID_CELL)
-		{
-		    vitt.setTile(vit);
-
-		    for (vitt.rewind(); !vitt.atEnd(); vitt.advance())
-		    {
-			if (vitt.getValue() == HDK::Utilities::LIQUID_CELL)
-			{
-			    UT_Vector3I cell(vitt.x(), vitt.y(), vitt.z());
-
-			    SolveReal value = debugDivergenceGrid(cell);
-
-			    if (fabs(value) > fabs(localMaxValue))
-				localMaxValue = value;
-
-			    localSumValue += value;
-			}
-		    }
-
-		    tiledMaxDivergenceList[tileNumber] = localMaxValue;
-		    tiledSumDivergenceList[tileNumber] = localSumValue;
-		}
-	    }
-	}
+	return 0;
     });
 }

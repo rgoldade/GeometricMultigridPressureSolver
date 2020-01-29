@@ -1,6 +1,8 @@
 build/*
 build_debug/*
 
+Scenes/backup/*
+
 # Prerequisites
 *.d
 
