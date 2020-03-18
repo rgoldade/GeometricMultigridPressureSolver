@@ -28,6 +28,8 @@ namespace HDK
 		    const UT_VoxelArray<StoreReal> &rhsVector,
 		    const bool useInitialGuess = false);
 
+	int getMGLevels() { return myMGLevels; }
+
     private:
 
 	UT_Array<UT_VoxelArray<int>> myCellLabels;
