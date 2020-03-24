@@ -513,7 +513,7 @@ namespace HDK
 	    }
 
 	    // If there is only one MG level, it's not safe to proceed.
-	    if (myMGLevels > 1)
+	    if (myMGLevels == 1)
 		return;
 
 	    {
