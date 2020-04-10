@@ -93,8 +93,7 @@ namespace HDK::Utilities
 	using SIM::FieldUtils::setFieldValue;
 	using SIM::FieldUtils::cellToFaceMap;
 
-	assert(materialCellLabels.isAligned(&liquidSurface));
-
+	materialCellLabels.match(liquidSurface);
 	materialCellLabels.makeConstant(FreeSurfaceMaterialLabels::SOLID_CELL);
 
 	UT_Interrupt *boss = UTgetInterrupt();
