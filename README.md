@@ -6,7 +6,7 @@ This is a geometric multigrid solver for a standard scalar poisson problem that 
 
 To build this project in Houdini (Linux):
 
-1. Install [Eigen3](http://eigen.tuxfamily.org/)
+1. Install [Eigen](http://eigen.tuxfamily.org/)
  
 2. Install Houdini 18.0 or higher.
 
