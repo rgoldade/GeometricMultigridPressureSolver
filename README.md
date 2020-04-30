@@ -6,19 +6,21 @@ This is a geometric multigrid solver for a standard scalar poisson problem that 
 
 To build this project in Houdini (Linux):
 
-1. Install Houdini 18.0 or higher.
+1. Install [Eigen3](http://eigen.tuxfamily.org/)
+ 
+2. Install Houdini 18.0 or higher.
 
-2. Go to install folder (/opt/hfs.xx).
+3. Go to install folder (/opt/hfs.xx).
 
-3. Type "source houdini_setup" to get the necessary environment variables.
+4. Type "source houdini_setup" to get the necessary environment variables.
 
-4. Make a build folder the top level of the repository.
+5. Make a build folder the top level of the repository.
 
-5. Run cmake .. in the build folder (if Eigen is preferred over native Houdini's Conjugate Gradient method, include -DUSEEIGEN=ON).
+6. Run cmake .. in the build folder
 
-6. Run make in the build folder.
+7. Run make in the build folder.
 
-7. Verify that it was added to Houdini by:
+8. Verify that it was added to Houdini by:
   - Launch Houdini.
   - Press "tab" in the Network Editor and select a "DOP Network" and place it in the editor.
   - Jump into the DOP Network, press "tab" again and verify that "HDK Geometric Free Surface Pressure Solver" is searchable.
@@ -31,4 +33,3 @@ The Scenes folder contains two example files. *testMultiGrid* is simply a diagno
 
 ## TO-DO
 1. Introduce mixed precision according to Narrow-Band Topology Optimization on a Sparsely Populated Grid [Liu et al., 2018]
-
