@@ -21,7 +21,7 @@ To build this project in Houdini (Linux):
 7. Verify that it was added to Houdini by:
   - Launch Houdini.
   - Press "tab" in the Network Editor and select a "DOP Network" and place it in the editor.
-  - Jump into the DOP Network, press "tab" again and verify that "HDK Adaptive Viscosity" is searchable.
+  - Jump into the DOP Network, press "tab" again and verify that "HDK Geometric Free Surface Pressure Solver" is searchable.
 
 To build this project in another OS, please refer to the [Houdini HDK](https://www.sidefx.com/docs/hdk/).
 
